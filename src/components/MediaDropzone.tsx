@@ -6,10 +6,18 @@ import { Icon } from './Icon'
 interface MediaDropzoneProps {
     itemCount: number
     isBusy: boolean
+    selectedFiles: string[]
+    uploadErrorMessage: string | null
     onFilesAccepted: (files: File[]) => Promise<void> | void
 }
 
-export function MediaDropzone({ itemCount, isBusy, onFilesAccepted }: MediaDropzoneProps) {
+export function MediaDropzone({
+    itemCount,
+    isBusy,
+    selectedFiles,
+    uploadErrorMessage,
+    onFilesAccepted,
+}: MediaDropzoneProps) {
     const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
     const { getInputProps, getRootProps, isDragActive, open } = useDropzone({
@@ -55,7 +63,26 @@ export function MediaDropzone({ itemCount, isBusy, onFilesAccepted }: MediaDropz
                 </button>
             </div>
 
+            {selectedFiles.length > 0 ? (
+                <div className="dropzone__selection-summary">
+                    <p className="dropzone__selection-title">
+                        {isBusy
+                            ? `Subiendo ${selectedFiles.length} archivo${selectedFiles.length === 1 ? '' : 's'}...`
+                            : `Ultima seleccion: ${selectedFiles.length} archivo${selectedFiles.length === 1 ? '' : 's'}`}
+                    </p>
+
+                    <ul className="dropzone__selection-list">
+                        {selectedFiles.map((fileName) => (
+                            <li key={fileName} className="dropzone__selection-item">
+                                {fileName}
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            ) : null}
+
             {errorMessage ? <p className="dropzone__error">{errorMessage}</p> : null}
+            {uploadErrorMessage ? <p className="dropzone__error">{uploadErrorMessage}</p> : null}
         </div>
     )
 }

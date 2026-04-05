@@ -334,6 +334,37 @@
   color: #ffb6b6;
 }
 
+.dropzone__selection-summary {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.dropzone__selection-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.dropzone__selection-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dropzone__selection-item {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .playlist-wrap {
   display: flex;
   flex-direction: column;

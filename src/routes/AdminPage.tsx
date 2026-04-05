@@ -22,8 +22,39 @@ import { ORIENTATION_OPTIONS, createMediaItemFromFile } from '../lib/media'
 import { usePlaylistStore } from '../store/usePlaylistStore'
 import type { MediaItem, Orientation } from '../types/media'
 
+function createUploadId() {
+    if (globalThis.crypto?.randomUUID) {
+        return globalThis.crypto.randomUUID()
+    }
+
+    const randomBytes = new Uint8Array(16)
+
+    if (globalThis.crypto?.getRandomValues) {
+        globalThis.crypto.getRandomValues(randomBytes)
+    } else {
+        for (let index = 0; index < randomBytes.length; index += 1) {
+            randomBytes[index] = Math.floor(Math.random() * 256)
+        }
+    }
+
+    randomBytes[6] = (randomBytes[6] & 0x0f) | 0x40
+    randomBytes[8] = (randomBytes[8] & 0x3f) | 0x80
+
+    const hex = Array.from(randomBytes, (value) => value.toString(16).padStart(2, '0')).join('')
+
+    return [
+        hex.slice(0, 8),
+        hex.slice(8, 12),
+        hex.slice(12, 16),
+        hex.slice(16, 20),
+        hex.slice(20),
+    ].join('-')
+}
+
 export function AdminPage() {
     const [isUploading, setIsUploading] = useState(false)
+    const [selectedFiles, setSelectedFiles] = useState<string[]>([])
+    const [uploadErrorMessage, setUploadErrorMessage] = useState<string | null>(null)
 
     const playlist = usePlaylistStore((state) => state.playlist)
     const mediaUrls = usePlaylistStore((state) => state.mediaUrls)
@@ -40,12 +71,14 @@ export function AdminPage() {
 
     const handleFilesAccepted = async (files: File[]) => {
         setIsUploading(true)
+        setSelectedFiles(files.map((file) => file.name))
+        setUploadErrorMessage(null)
 
         try {
             const uploads: Array<{ file: File; item: MediaItem }> = []
 
             for (const file of files) {
-                const id = crypto.randomUUID()
+                const id = createUploadId()
                 const createdAt = Date.now()
                 const item = await createMediaItemFromFile(file, id, createdAt)
 
@@ -57,6 +90,7 @@ export function AdminPage() {
             }
 
             if (uploads.length === 0) {
+                setUploadErrorMessage('No se pudo preparar ningun archivo valido para subir.')
                 return
             }
 
@@ -82,6 +116,7 @@ export function AdminPage() {
             void store.ensureMediaUrls()
         } catch (error) {
             console.error(error)
+            setUploadErrorMessage(error instanceof Error ? error.message : 'No se pudieron cargar los archivos seleccionados.')
         } finally {
             setIsUploading(false)
         }
@@ -232,6 +267,8 @@ export function AdminPage() {
                         <MediaDropzone
                             isBusy={isUploading}
                             itemCount={playlist.length}
+                            selectedFiles={selectedFiles}
+                            uploadErrorMessage={uploadErrorMessage}
                             onFilesAccepted={handleFilesAccepted}
                         />
                     </div>

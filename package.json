@@ -4,15 +4,16 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "predev": "kill-port 5173 5174 8787 || exit 0",
     "dev": "concurrently -k \"pnpm dev:server\" \"pnpm dev:client\"",
-    "dev:client": "vite --host 0.0.0.0",
-    "dev:server": "PORT=8787 tsx watch server/index.ts",
+    "dev:client": "vite --host 0.0.0.0 --strictPort",
+    "dev:server": "cross-env PORT=8787 tsx watch server/index.ts",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview --host 0.0.0.0",
     "prestart": "pnpm build",
-    "start": "PORT=5173 tsx server/index.ts",
-    "start:server": "PORT=8787 tsx server/index.ts"
+    "start": "tsx server/index.ts",
+    "start:server": "cross-env PORT=8787 tsx server/index.ts"
   },
   "dependencies": {
     "@hugeicons-pro/core-solid-standard": "^4.1.0",
@@ -40,10 +41,12 @@
     "@vitejs/plugin-react": "^6.0.1",
     "babel-plugin-react-compiler": "^1.0.0",
     "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
     "eslint": "^9.39.4",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.4.0",
+    "kill-port": "^2.0.1",
     "tsx": "^4.21.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.57.0",

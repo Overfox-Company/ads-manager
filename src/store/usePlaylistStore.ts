@@ -21,6 +21,7 @@ type PlaylistStore = {
 
 const MAX_IMAGE_DURATION_SECONDS = 300
 const MIN_IMAGE_DURATION_SECONDS = 3
+const pendingMediaCacheIds = new Set<string>()
 
 function clampImageDuration(seconds: number) {
     if (!Number.isFinite(seconds)) {
@@ -31,11 +32,42 @@ function clampImageDuration(seconds: number) {
 }
 
 function revokeObjectUrl(url: string | undefined) {
-    if (!url) {
+    if (!url || !url.startsWith('blob:')) {
         return
     }
 
     URL.revokeObjectURL(url)
+}
+
+async function cacheRemoteMedia(item: MediaItem) {
+    if (pendingMediaCacheIds.has(item.id)) {
+        return
+    }
+
+    pendingMediaCacheIds.add(item.id)
+
+    try {
+        const response = await fetch(getMediaContentUrl(item.id))
+
+        if (!response.ok) {
+            return
+        }
+
+        const blob = await response.blob()
+
+        await saveMediaBlob({
+            id: item.id,
+            name: item.name,
+            mimeType: item.mimeType,
+            size: item.size,
+            createdAt: item.createdAt,
+            blob,
+        })
+    } catch (error) {
+        console.error(error)
+    } finally {
+        pendingMediaCacheIds.delete(item.id)
+    }
 }
 
 function normalizeReferences(
@@ -114,22 +146,9 @@ export const usePlaylistStore = create<PlaylistStore>()(
                 let blob = await getMediaBlob(item.id)
 
                 if (!blob) {
-                    const response = await fetch(getMediaContentUrl(item.id))
-
-                    if (!response.ok) {
-                        continue
-                    }
-
-                    blob = await response.blob()
-
-                    await saveMediaBlob({
-                        id: item.id,
-                        name: item.name,
-                        mimeType: item.mimeType,
-                        size: item.size,
-                        createdAt: item.createdAt,
-                        blob,
-                    })
+                    loadedUrls[item.id] = getMediaContentUrl(item.id)
+                    void cacheRemoteMedia(item)
+                    continue
                 }
 
                 loadedUrls[item.id] = URL.createObjectURL(blob)
