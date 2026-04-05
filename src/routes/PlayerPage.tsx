@@ -1,362 +1,325 @@
-import { MonitorStopIcon } from '@hugeicons-pro/core-solid-standard'
-import { useEffect, useEffectEvent, useRef, useState } from 'react'
-import { Icon } from '../components/Icon'
-import { formatOrientationLabel, formatPlaybackStatus } from '../lib/format'
-import { getDisplayDurationSeconds } from '../lib/media'
-import { sendPlaybackAction } from '../lib/serverApi'
-import { usePlaylistStore } from '../store/usePlaylistStore'
-import type { MediaItem } from '../types/media'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useParams } from 'react-router-dom'
+import { advancePlayer, reportPlayerIssue } from '../lib/serverApi'
+import { IdleState } from '../player/IdleState'
+import { MediaRenderer } from '../player/MediaRenderer'
+import { PlayerStage } from '../player/PlayerStage'
+import { usePlayerManifest } from '../player/usePlayerManifest'
+import type { PlayerAdvanceReason, PlayerIssueReason, PlayerManifest } from '../types/network'
 
-const PRELOAD_THRESHOLD_SECONDS = 2.5
+const MEDIA_LOAD_TIMEOUT_MS = 15000
 
-type SlotName = 'primary' | 'secondary'
-
-type PlayerSlot = {
-    item: MediaItem | null
-    url: string | null
-    ready: boolean
-}
-
-const EMPTY_SLOT: PlayerSlot = {
-    item: null,
-    url: null,
-    ready: false,
-}
-
-function getNextItem(items: MediaItem[], currentIndex: number) {
-    if (items.length < 2) {
-        return null
+function clampIndex(index: number, length: number) {
+    if (length === 0) {
+        return 0
     }
 
-    return items[(currentIndex + 1) % items.length] ?? null
+    return Math.min(Math.max(index, 0), length - 1)
+}
+
+function resolveIdleState(manifest: PlayerManifest | null, errorMessage: string | null, isLoading: boolean) {
+    if (isLoading && !manifest) {
+        return {
+            title: 'Conectando con el backend',
+            message: 'Recuperando el manifiesto de reproduccion para esta pantalla.',
+            detail: null,
+            statusLabel: 'Sincronizando',
+        }
+    }
+
+    if (errorMessage && !manifest) {
+        return {
+            title: 'Sin conexion con el backend',
+            message: 'La pantalla no pudo recuperar el estado actual de reproduccion.',
+            detail: errorMessage,
+            statusLabel: 'Offline',
+        }
+    }
+
+    if (!manifest || manifest.items.length === 0) {
+        return {
+            title: 'Sin contenido activo',
+            message: 'El backend no tiene una playlist disponible para reproducir en esta pantalla.',
+            detail: null,
+            statusLabel: 'Idle',
+        }
+    }
+
+    if (manifest.isPaused) {
+        return {
+            title: 'Reproduccion en pausa',
+            message: 'La playlist esta pausada desde administracion.',
+            detail: null,
+            statusLabel: 'Pausado',
+        }
+    }
+
+    return {
+        title: 'Esperando reproduccion',
+        message: 'La pantalla quedara lista hasta que el backend marque la playlist como activa.',
+        detail: null,
+        statusLabel: 'Idle',
+    }
 }
 
 export function PlayerPage() {
-    const playlist = usePlaylistStore((state) => state.playlist)
-    const mediaUrls = usePlaylistStore((state) => state.mediaUrls)
-    const currentIndex = usePlaylistStore((state) => state.currentIndex)
-    const status = usePlaylistStore((state) => state.status)
-    const orientation = usePlaylistStore((state) => state.orientation)
-    const imageDurationSeconds = usePlaylistStore((state) => state.imageDurationSeconds)
-
-    const currentItem = playlist[currentIndex] ?? null
-    const currentUrl = currentItem ? mediaUrls[currentItem.id] ?? null : null
-    const nextItem = getNextItem(playlist, currentIndex)
-    const nextUrl = nextItem ? mediaUrls[nextItem.id] ?? null : null
-
-    const [activeSlot, setActiveSlot] = useState<SlotName>('primary')
-    const [primarySlot, setPrimarySlot] = useState<PlayerSlot>(EMPTY_SLOT)
-    const [secondarySlot, setSecondarySlot] = useState<PlayerSlot>(EMPTY_SLOT)
-    const [preloadTargetId, setPreloadTargetId] = useState<string | null>(null)
-
-    const primaryVideoRef = useRef<HTMLVideoElement | null>(null)
-    const secondaryVideoRef = useRef<HTMLVideoElement | null>(null)
-    const previousCurrentItemIdRef = useRef<string | null>(null)
-
-    const activeMedia = activeSlot === 'primary' ? primarySlot : secondarySlot
-    const standbySlotName: SlotName = activeSlot === 'primary' ? 'secondary' : 'primary'
-    const standbyMedia = standbySlotName === 'primary' ? primarySlot : secondarySlot
-    const displayedItem = activeMedia.item ?? currentItem
-    const displayedIndex = displayedItem
-        ? playlist.findIndex((item) => item.id === displayedItem.id)
-        : currentIndex
-
-    const setSlot = (slotName: SlotName, nextValue: PlayerSlot) => {
-        if (slotName === 'primary') {
-            setPrimarySlot(nextValue)
-            return
-        }
-
-        setSecondarySlot(nextValue)
-    }
-
-    const updateSlotReady = (slotName: SlotName, itemId: string) => {
-        if (slotName === 'primary') {
-            setPrimarySlot((current) =>
-                current.item?.id === itemId
-                    ? { ...current, ready: true }
-                    : current,
-            )
-            return
-        }
-
-        setSecondarySlot((current) =>
-            current.item?.id === itemId
-                ? { ...current, ready: true }
-                : current,
-        )
-    }
-
-    const resetPreloadTarget = useEffectEvent(() => {
-        setPreloadTargetId(null)
+    const { screenId } = useParams<{ screenId?: string }>()
+    const { manifest, isLoading, errorMessage, replaceManifest } = usePlayerManifest(screenId)
+    const [readyState, setReadyState] = useState<{ key: string; ready: boolean }>({ key: '', ready: false })
+    const [runtimeState, setRuntimeState] = useState<{ key: string; detail: string | null }>({
+        key: '',
+        detail: null,
     })
+    const [exhaustedPlaylistId, setExhaustedPlaylistId] = useState<string | null>(null)
+    const failureHistoryRef = useRef<{ playlistId: string; itemIds: Set<string> }>({
+        playlistId: '',
+        itemIds: new Set<string>(),
+    })
+    const handledEventKeysRef = useRef<Set<string>>(new Set())
 
-    const syncCurrentSlot = useEffectEvent((nextItem: MediaItem | null, nextUrlValue: string | null) => {
-        if (!nextItem || !nextUrlValue || status === 'stopped') {
+    const currentItem = useMemo(() => {
+        if (!manifest || manifest.items.length === 0) {
+            return null
+        }
+
+        return manifest.items[clampIndex(manifest.currentIndex, manifest.items.length)] ?? null
+    }, [manifest])
+
+    const currentPlaybackKey = manifest && currentItem
+        ? `${manifest.version}:${currentItem.id}`
+        : 'idle'
+    const isMediaReady = readyState.key === currentPlaybackKey && readyState.ready
+    const runtimeDetail = runtimeState.key === currentPlaybackKey ? runtimeState.detail : null
+
+    useEffect(() => {
+        if (!manifest) {
             return
         }
 
-        if (activeMedia.item?.id === nextItem.id && activeMedia.url === nextUrlValue) {
+        if (failureHistoryRef.current.playlistId !== manifest.playlistId) {
+            failureHistoryRef.current = {
+                playlistId: manifest.playlistId,
+                itemIds: new Set<string>(),
+            }
+        }
+    }, [manifest])
+
+    const markFailedItem = (failedItemId: string, activeManifest: PlayerManifest) => {
+        if (failureHistoryRef.current.playlistId !== activeManifest.playlistId) {
+            failureHistoryRef.current = {
+                playlistId: activeManifest.playlistId,
+                itemIds: new Set<string>(),
+            }
+        }
+
+        failureHistoryRef.current.itemIds.add(failedItemId)
+
+        if (failureHistoryRef.current.itemIds.size >= activeManifest.items.length) {
+            setExhaustedPlaylistId(activeManifest.playlistId)
+        }
+    }
+
+    const withEventGuard = (reason: string) => {
+        if (!manifest || !currentItem) {
+            return false
+        }
+
+        const eventKey = `${manifest.version}:${currentItem.id}:${reason}`
+
+        if (handledEventKeysRef.current.has(eventKey)) {
+            return false
+        }
+
+        if (handledEventKeysRef.current.size > 128) {
+            handledEventKeysRef.current.clear()
+        }
+
+        handledEventKeysRef.current.add(eventKey)
+        return true
+    }
+
+    const handleAdvance = async (reason: PlayerAdvanceReason) => {
+        if (!manifest || !currentItem || !withEventGuard(reason)) {
             return
         }
 
-        if (
-            standbyMedia.item?.id === nextItem.id &&
-            standbyMedia.url === nextUrlValue &&
-            standbyMedia.ready
-        ) {
-            setActiveSlot(standbySlotName)
-            return
-        }
-
-        if (!activeMedia.item || !activeMedia.url) {
-            setSlot(activeSlot, {
-                item: nextItem,
-                url: nextUrlValue,
-                ready: nextItem.type === 'image',
+        try {
+            replaceManifest(await advancePlayer(currentItem.id, manifest.version, reason, screenId))
+        } catch (error) {
+            setRuntimeState({
+                key: currentPlaybackKey,
+                detail:
+                    error instanceof Error
+                        ? error.message
+                        : 'No se pudo informar al backend que el item termino.',
             })
+        }
+    }
+
+    const handleFailure = async (reason: PlayerIssueReason, detail: string) => {
+        if (!manifest || !currentItem || !withEventGuard(reason)) {
             return
         }
 
-        setSlot(standbySlotName, {
-            item: nextItem,
-            url: nextUrlValue,
-            ready: false,
-        })
-    })
+        setRuntimeState({ key: currentPlaybackKey, detail })
+        markFailedItem(currentItem.id, manifest)
 
-    const syncStandbySlot = useEffectEvent((nextTargetId: string | null) => {
-        if (!nextTargetId) {
-            return
+        try {
+            replaceManifest(await reportPlayerIssue(currentItem.id, manifest.version, reason, detail, screenId))
+        } catch (error) {
+            setRuntimeState({
+                key: currentPlaybackKey,
+                detail:
+                    error instanceof Error
+                        ? error.message
+                        : detail,
+            })
         }
-
-        const preloadItem = playlist.find((item) => item.id === nextTargetId) ?? null
-        const preloadUrl = preloadItem ? mediaUrls[preloadItem.id] ?? null : null
-
-        if (!preloadItem || !preloadUrl) {
-            return
-        }
-
-        if (standbyMedia.item?.id === preloadItem.id && standbyMedia.url === preloadUrl) {
-            return
-        }
-
-        setSlot(standbySlotName, {
-            item: preloadItem,
-            url: preloadUrl,
-            ready: false,
-        })
-    })
+    }
 
     useEffect(() => {
-        if (previousCurrentItemIdRef.current !== (currentItem?.id ?? null)) {
-            previousCurrentItemIdRef.current = currentItem?.id ?? null
-            resetPreloadTarget()
-        }
-
-        syncCurrentSlot(currentItem, currentUrl)
-    }, [
-        activeMedia.item?.id,
-        activeMedia.url,
-        activeSlot,
-        currentItem,
-        currentUrl,
-        standbyMedia.item?.id,
-        standbyMedia.ready,
-        standbyMedia.url,
-        standbySlotName,
-        status,
-    ])
-
-    useEffect(() => {
-        if (!currentItem || currentItem.type !== 'image' || !currentUrl || status !== 'playing') {
+        if (!manifest || !manifest.isPlaying || !currentItem || exhaustedPlaylistId === manifest.playlistId) {
             return
         }
 
-        const durationSeconds = getDisplayDurationSeconds(currentItem, imageDurationSeconds)
-
-        if (!durationSeconds) {
+        if (isMediaReady) {
             return
         }
 
         const timeout = window.setTimeout(() => {
-            const store = usePlaylistStore.getState()
-
-            if (store.playlist.length === 0 || store.status !== 'playing') {
+            if (!manifest || !currentItem) {
                 return
             }
 
-            void sendPlaybackAction('next').catch((error) => {
-                console.error(error)
+            const eventKey = `${manifest.version}:${currentItem.id}:load-timeout`
+
+            if (handledEventKeysRef.current.has(eventKey)) {
+                return
+            }
+
+            if (handledEventKeysRef.current.size > 128) {
+                handledEventKeysRef.current.clear()
+            }
+
+            handledEventKeysRef.current.add(eventKey)
+
+            setRuntimeState({
+                key: currentPlaybackKey,
+                detail: 'El medio actual no respondio dentro del tiempo esperado.',
             })
-        }, durationSeconds * 1000)
+            markFailedItem(currentItem.id, manifest)
+
+            void reportPlayerIssue(
+                currentItem.id,
+                manifest.version,
+                'load-timeout',
+                'El medio actual no respondio dentro del tiempo esperado.',
+                screenId,
+            )
+                .then((nextManifest) => {
+                    replaceManifest(nextManifest)
+                })
+                .catch((error) => {
+                    setRuntimeState({
+                        key: currentPlaybackKey,
+                        detail: error instanceof Error ? error.message : 'El medio actual no respondio dentro del tiempo esperado.',
+                    })
+                })
+        }, MEDIA_LOAD_TIMEOUT_MS)
 
         return () => {
             window.clearTimeout(timeout)
         }
-    }, [currentItem, currentUrl, imageDurationSeconds, status])
+    }, [currentItem, currentPlaybackKey, exhaustedPlaylistId, isMediaReady, manifest, replaceManifest, screenId])
 
     useEffect(() => {
-        const video = activeSlot === 'primary' ? primaryVideoRef.current : secondaryVideoRef.current
-
-        if (!video || activeMedia.item?.type !== 'video' || !activeMedia.url) {
+        if (
+            !manifest ||
+            !manifest.isPlaying ||
+            !currentItem ||
+            currentItem.type !== 'image' ||
+            !isMediaReady ||
+            exhaustedPlaylistId === manifest.playlistId
+        ) {
             return
         }
 
-        if (status === 'playing') {
-            void video.play().catch(() => undefined)
-            return
-        }
-
-        video.pause()
-    }, [activeMedia.item?.id, activeMedia.item?.type, activeMedia.url, activeSlot, status])
-
-    useEffect(() => {
-        if (!currentItem || !nextItem || !nextUrl || status !== 'playing') {
-            return
-        }
-
-        if (currentItem.type === 'image') {
-            const durationSeconds = getDisplayDurationSeconds(currentItem, imageDurationSeconds)
-
-            if (!durationSeconds) {
+        const durationMs = Math.max(1, currentItem.duration ?? manifest.imageDurationSeconds) * 1000
+        const timeout = window.setTimeout(() => {
+            if (!manifest || !currentItem) {
                 return
             }
 
-            const preloadDelayMs = Math.max(durationSeconds - PRELOAD_THRESHOLD_SECONDS, 0) * 1000
-            const timeout = window.setTimeout(() => {
-                setPreloadTargetId((current) => current ?? nextItem.id)
-            }, preloadDelayMs)
+            const eventKey = `${manifest.version}:${currentItem.id}:image-timeout`
 
-            return () => {
-                window.clearTimeout(timeout)
-            }
-        }
-
-        const video = activeSlot === 'primary' ? primaryVideoRef.current : secondaryVideoRef.current
-
-        if (!video) {
-            return
-        }
-
-        const handleTimeUpdate = () => {
-            if (!Number.isFinite(video.duration)) {
+            if (handledEventKeysRef.current.has(eventKey)) {
                 return
             }
 
-            if (video.duration - video.currentTime <= PRELOAD_THRESHOLD_SECONDS) {
-                setPreloadTargetId((current) => current ?? nextItem.id)
+            if (handledEventKeysRef.current.size > 128) {
+                handledEventKeysRef.current.clear()
             }
-        }
 
-        video.addEventListener('timeupdate', handleTimeUpdate)
-        handleTimeUpdate()
+            handledEventKeysRef.current.add(eventKey)
+
+            void advancePlayer(currentItem.id, manifest.version, 'image-timeout', screenId)
+                .then((nextManifest) => {
+                    replaceManifest(nextManifest)
+                })
+                .catch((error) => {
+                    setRuntimeState({
+                        key: currentPlaybackKey,
+                        detail: error instanceof Error ? error.message : 'No se pudo informar al backend que la imagen termino.',
+                    })
+                })
+        }, durationMs)
 
         return () => {
-            video.removeEventListener('timeupdate', handleTimeUpdate)
+            window.clearTimeout(timeout)
         }
-    }, [activeSlot, currentItem, imageDurationSeconds, nextItem, nextUrl, status])
+    }, [currentItem, currentPlaybackKey, exhaustedPlaylistId, isMediaReady, manifest, replaceManifest, screenId])
 
-    useEffect(() => {
-        syncStandbySlot(preloadTargetId)
-    }, [preloadTargetId])
+    const shouldRenderMedia = Boolean(
+        manifest &&
+        manifest.isPlaying &&
+        currentItem &&
+        exhaustedPlaylistId !== manifest.playlistId,
+    )
 
-    const stageClassName = `player-stage player-stage--${orientation}`
-
-    const renderSlot = (slotName: SlotName, slot: PlayerSlot, isActive: boolean) => {
-        if (!slot.item || !slot.url) {
-            return null
+    const idleState = exhaustedPlaylistId === manifest?.playlistId
+        ? {
+            title: 'Sin medios reproducibles',
+            message: 'Todos los items de la playlist actual fallaron o no parecen compatibles con este navegador.',
+            detail: runtimeDetail,
+            statusLabel: 'Fallback',
         }
-
-        const className = `player-media-layer${isActive ? ' player-media-layer--active' : ' player-media-layer--standby'}`
-
-        if (slot.item.type === 'image') {
-            return (
-                <div className={className} key={`${slotName}-${slot.item.id}`}>
-                    <img
-                        alt={slot.item.name}
-                        className="player-media"
-                        loading="eager"
-                        onLoad={() => updateSlotReady(slotName, slot.item!.id)}
-                        src={slot.url}
-                    />
-                </div>
-            )
-        }
-
-        return (
-            <div className={className} key={`${slotName}-${slot.item.id}`}>
-                <video
-                    className="player-media"
-                    muted
-                    onCanPlay={() => updateSlotReady(slotName, slot.item!.id)}
-                    onEnded={() => {
-                        if (!isActive) {
-                            return
-                        }
-
-                        const store = usePlaylistStore.getState()
-
-                        if (store.playlist.length === 0 || store.status !== 'playing') {
-                            return
-                        }
-
-                        void sendPlaybackAction('next').catch((error) => {
-                            console.error(error)
-                        })
-                    }}
-                    onLoadedData={() => updateSlotReady(slotName, slot.item!.id)}
-                    playsInline
-                    preload="auto"
-                    ref={slotName === 'primary' ? primaryVideoRef : secondaryVideoRef}
-                    src={slot.url}
-                />
-            </div>
-        )
-    }
+        : resolveIdleState(manifest, errorMessage, isLoading)
 
     return (
-        <div className="player-shell">
-            <div className={stageClassName}>
-                <div className="player-stage__viewport">
-                    <div className="player-stage__content">
-                        {status === 'stopped' || !currentItem ? (
-                            <div className="player-idle">
-                                <Icon icon={MonitorStopIcon} size={32} />
-                                <h1>{playlist.length === 0 ? 'Sin contenido cargado' : 'Esperando reproduccion'}</h1>
-                                <p>
-                                    {playlist.length === 0
-                                        ? 'Carga medios desde la vista de administracion para habilitar esta pantalla.'
-                                        : 'La reproduccion comenzara cuando se pulse Play desde la administracion.'}
-                                </p>
-                                <div className="player-idle__meta">
-                                    <span>Playlist: {playlist.length} items</span>
-                                    <span>Orientacion: {formatOrientationLabel(orientation)}</span>
-                                    <span>Estado: {formatPlaybackStatus(status)}</span>
-                                </div>
-                            </div>
-                        ) : activeMedia.item && activeMedia.url ? (
-                            <>
-                                {renderSlot('primary', primarySlot, activeSlot === 'primary')}
-                                {renderSlot('secondary', secondarySlot, activeSlot === 'secondary')}
-
-                                <div className="player-overlay">
-                                    <span className={`player-pill player-pill--${status}`}>{formatPlaybackStatus(status)}</span>
-                                    <span className="player-caption">
-                                        {(displayedIndex >= 0 ? displayedIndex : currentIndex) + 1} / {playlist.length} · {(displayedItem ?? currentItem).name}
-                                    </span>
-                                </div>
-                            </>
-                        ) : (
-                            <div className="player-loading">
-                                <Icon icon={MonitorStopIcon} size={32} />
-                                <h1>Preparando contenido</h1>
-                                <p>Recuperando el medio desde el servidor o la cache local de este navegador.</p>
-                            </div>
-                        )}
-                    </div>
-                </div>
-            </div>
-        </div>
+        <PlayerStage orientation={manifest?.orientation ?? 'horizontal'}>
+            {shouldRenderMedia && currentItem ? (
+                <MediaRenderer
+                    item={currentItem}
+                    key={currentPlaybackKey}
+                    onCompleted={() => {
+                        void handleAdvance('completed')
+                    }}
+                    onFailure={(reason, detail) => {
+                        void handleFailure(reason, detail)
+                    }}
+                    onReady={() => {
+                        setReadyState({ key: currentPlaybackKey, ready: true })
+                        setRuntimeState({ key: currentPlaybackKey, detail: null })
+                    }}
+                />
+            ) : (
+                <IdleState
+                    detail={idleState.detail}
+                    message={idleState.message}
+                    statusLabel={idleState.statusLabel}
+                    title={idleState.title}
+                />
+            )}
+        </PlayerStage>
     )
 }

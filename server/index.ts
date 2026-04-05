@@ -4,12 +4,16 @@ import http from 'node:http'
 import express from 'express'
 import multer from 'multer'
 import WebSocket, { WebSocketServer } from 'ws'
+import { getMediaCompatibilityWarnings } from '../src/lib/mediaPolicy'
 import type { MediaItem, MediaType, Orientation } from '../src/types/media'
 import type {
     DurationOverrideRequest,
     ImageDurationRequest,
     OrientationRequest,
     PlaybackActionRequest,
+    PlayerAdvanceRequest,
+    PlayerIssueRequest,
+    PlayerManifest,
     PlaylistCurrentIndexRequest,
     PlaylistReorderRequest,
     PlaylistSelectionRequest,
@@ -41,6 +45,50 @@ function sendState(response: express.Response<StateResponse>, state = repository
 
 function sendError(response: express.Response, status: number, error: string) {
     return response.status(status).json({ error })
+}
+
+function getRequestOrigin(request: express.Request) {
+    const host = request.get('host') ?? `localhost:${PORT}`
+    return `${request.protocol}://${host}`
+}
+
+function buildPlaylistId(items: MediaItem[]) {
+    return items.length === 0 ? 'empty' : items.map((item) => item.id).join('|')
+}
+
+function buildPlayerManifest(request: express.Request, state = repository.getState()) {
+    const origin = getRequestOrigin(request)
+
+    return {
+        playlistId: buildPlaylistId(state.playlist),
+        version: state.updatedAt,
+        status: state.status,
+        isPlaying: state.status === 'playing',
+        isPaused: state.status === 'paused',
+        currentIndex: state.currentIndex,
+        currentItemId: state.playlist[state.currentIndex]?.id ?? null,
+        orientation: state.orientation,
+        imageDurationSeconds: state.imageDurationSeconds,
+        updatedAt: state.updatedAt,
+        items: state.playlist.map((item) => ({
+            id: item.id,
+            name: item.name,
+            type: item.type,
+            src: new URL(`/api/media/${item.id}/content`, `${origin}/`).toString(),
+            mime: item.mimeType,
+            duration: item.type === 'image'
+                ? item.durationOverrideSeconds ?? state.imageDurationSeconds
+                : null,
+        })),
+    } satisfies PlayerManifest
+}
+
+function sendPlayerManifest(
+    request: express.Request,
+    response: express.Response<{ manifest: PlayerManifest }>,
+    state = repository.getState(),
+) {
+    return response.json({ manifest: buildPlayerManifest(request, state) })
 }
 
 function broadcastState(server: WebSocketServer) {
@@ -75,6 +123,7 @@ async function main() {
     await repository.initialize()
 
     const app = express()
+    app.set('trust proxy', true)
     const httpServer = http.createServer(app)
     const websocketServer = new WebSocketServer({ server: httpServer, path: '/ws' })
 
@@ -106,6 +155,12 @@ async function main() {
 
     app.get('/api/state', (_request, response) => {
         sendState(response)
+    })
+
+    app.get('/api/player/manifest', async (request, response) => {
+        const state = await repository.repairCurrentIndex()
+
+        return sendPlayerManifest(request, response, state)
     })
 
     app.post('/api/media/upload', upload.array('files'), async (request, response) => {
@@ -160,9 +215,15 @@ async function main() {
         })
 
         const state = await repository.appendUploads(entries)
+        const warnings = entries.flatMap(({ item }) =>
+            getMediaCompatibilityWarnings(item).map((warning) => ({
+                ...warning,
+                itemId: item.id,
+            })),
+        )
 
         broadcastState(websocketServer)
-        return sendState(response, state)
+        return response.json({ state, warnings } satisfies StateResponse)
     })
 
     app.get('/api/media/:id/content', (request, response) => {
@@ -271,6 +332,44 @@ async function main() {
 
         broadcastState(websocketServer)
         return sendState(response, state)
+    })
+
+    app.post('/api/player/advance', async (request, response) => {
+        const body = request.body as PlayerAdvanceRequest
+
+        if (
+            !body ||
+            typeof body.expectedVersion !== 'number' ||
+            (body.reason !== 'completed' && body.reason !== 'image-timeout')
+        ) {
+            return sendError(response, 400, 'Payload invalido para avanzar reproduccion')
+        }
+
+        const state = await repository.advanceFromPlayer(body.expectedItemId ?? null, body.expectedVersion)
+
+        broadcastState(websocketServer)
+        return sendPlayerManifest(request, response, state)
+    })
+
+    app.post('/api/player/issues', async (request, response) => {
+        const body = request.body as PlayerIssueRequest
+
+        if (
+            !body ||
+            typeof body.expectedVersion !== 'number' ||
+            (body.reason !== 'load-timeout' && body.reason !== 'media-error' && body.reason !== 'unsupported')
+        ) {
+            return sendError(response, 400, 'Payload invalido para reportar error del player')
+        }
+
+        console.warn(
+            `[player${body.screenId ? `:${body.screenId}` : ''}] ${body.reason} item=${body.itemId ?? 'n/a'}${body.detail ? ` detail=${body.detail}` : ''}`,
+        )
+
+        const state = await repository.reportPlayerIssue(body.itemId ?? null, body.expectedVersion, body.reason)
+
+        broadcastState(websocketServer)
+        return sendPlayerManifest(request, response, state)
     })
 
     await maybeEnableStaticHosting(app)

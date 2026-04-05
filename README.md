@@ -2,7 +2,7 @@
 
 Base funcional de carteleria digital para red local construida con React + Vite.
 
-La administracion y el player pueden correr en PCs distintas dentro de la misma LAN. El servidor local persiste la playlist y los medios en disco, sincroniza el estado por WebSocket y cada navegador mantiene una cache local en IndexedDB para acelerar la reproduccion.
+La administracion y el player pueden correr en PCs distintas dentro de la misma LAN. El servidor local persiste la playlist y los medios en disco, sincroniza el estado por WebSocket para el admin y expone un manifiesto HTTP simple para que el player del TV funcione como cliente minimo de solo lectura.
 
 ## Stack
 
@@ -16,27 +16,53 @@ La administracion y el player pueden correr en PCs distintas dentro de la misma 
 - Express
 - Multer
 - WebSocket con `ws`
+- polling HTTP simple para el player del TV
 
 ## Rutas
 
 - `/`: administracion de playlist
-- `/player`: reproduccion fullscreen
+- `/player` y `/player/:screenId`: reproduccion fullscreen minimalista para TV
 
 ## Funcionalidad implementada
 
 - Carga multiple de imagenes y videos por drag and drop
 - Persistencia real de medios en disco desde un servidor local
 - Estado compartido entre equipos via REST + WebSocket
-- Cache local de blobs en IndexedDB por navegador
-- Reconstruccion de object URLs desde cache local o descarga remota
+- Cache local de blobs en IndexedDB solo para la experiencia de administracion
+- Manifiesto de reproduccion dedicado para TV con URLs HTTP directas del backend
 - Reordenamiento manual de playlist con drag and drop nativo
 - Eliminacion de items
 - Seleccion de item con preview y metadatos
 - Controles Play, Pausa, Siguiente, Anterior y Finalizar
 - Orientacion global real para el player
 - Estado idle en `/player` hasta recibir Play
-- Avance automatico: timeout para imagenes y `ended` para videos
-- Sincronizacion entre equipos usando WebSocket
+- Avance automatico delegado al backend: timeout para imagenes y `ended` para videos
+- Polling robusto cada pocos segundos para Smart TV con navegadores limitados
+
+## Politica de formatos para TV
+
+El perfil recomendado y soportado como base del sistema para carteleria es:
+
+- contenedor `MP4`
+- video `H.264 / AVC`
+- audio `AAC` estereo
+- resolucion sugerida `1080p`
+- `30 fps`
+- bitrate moderado
+
+No se asume como formato base `AV1`, `VP9`, `HEVC/H.265` ni streaming adaptativo complejo.
+
+El flujo actual valida y avisa cuando un video no llega como `video/mp4`. No se hace transcodificacion automatica en esta base, asi que la normalizacion recomendada debe ocurrir antes del upload o en un proceso de ingesta backend futuro.
+
+## Arquitectura de reproduccion TV
+
+La ruta `/player` ya no comparte la store pesada ni la cache local del admin.
+
+- El backend sigue siendo la fuente de verdad de playlist, indice actual, estado, orientacion y duracion de imagenes.
+- El TV consulta `GET /api/player/manifest` por polling simple.
+- El TV renderiza solo un `img` o un `video` a la vez usando URLs HTTP directas del backend.
+- Si un item falla, el player informa el error al backend y avanza sin bloquear toda la pantalla.
+- Si no hay reproduccion activa o no quedan items viables, muestra un estado idle sobrio.
 
 ## Comandos
 
@@ -79,6 +105,7 @@ server/
 ## Notas tecnicas
 
 - Los object URLs no se persisten. Se recrean desde IndexedDB o se descargan del servidor cuando hace falta.
+- El admin sigue usando IndexedDB para acelerar previews y operaciones de escritorio; el player del TV no depende de IndexedDB.
 - El player no empieza a reproducir hasta que el estado cambia a `playing` desde administracion.
 - La carpeta `local-data/` contiene el estado persistido del servidor y los archivos subidos.
 - Para usarlo entre equipos, ambos PCs deben poder llegar por red al host donde corre `pnpm dev`.

@@ -143,7 +143,7 @@ export const usePlaylistStore = create<PlaylistStore>()(
                     continue
                 }
 
-                let blob = await getMediaBlob(item.id)
+                const blob = await getMediaBlob(item.id)
 
                 if (!blob) {
                     loadedUrls[item.id] = getMediaContentUrl(item.id)

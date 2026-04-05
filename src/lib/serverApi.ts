@@ -1,11 +1,17 @@
 import type { MediaItem, Orientation } from '../types/media'
 import { getServerHttpUrl } from './serverOrigin'
 import type {
+    ApiWarning,
     DurationOverrideRequest,
     ImageDurationRequest,
     OrientationRequest,
     PlaybackAction,
     PlaybackActionRequest,
+    PlayerAdvanceReason,
+    PlayerAdvanceRequest,
+    PlayerIssueReason,
+    PlayerIssueRequest,
+    PlayerManifestResponse,
     PlaylistCurrentIndexRequest,
     PlaylistReorderRequest,
     PlaylistSelectionRequest,
@@ -44,6 +50,16 @@ function jsonRequest<TBody>(body: TBody): RequestInit {
     }
 }
 
+function buildPlayerManifestUrl(screenId?: string | null) {
+    const url = new URL(getServerHttpUrl('/api/player/manifest'))
+
+    if (screenId) {
+        url.searchParams.set('screenId', screenId)
+    }
+
+    return url.toString()
+}
+
 export function getMediaContentUrl(id: string) {
     return getServerHttpUrl(`/api/media/${id}/content`)
 }
@@ -52,6 +68,12 @@ export async function fetchServerState() {
     const payload = await requestJson<StateResponse>(getServerHttpUrl('/api/state'))
 
     return payload.state
+}
+
+export async function fetchPlayerManifest(screenId?: string | null) {
+    const payload = await requestJson<PlayerManifestResponse>(buildPlayerManifestUrl(screenId))
+
+    return payload.manifest
 }
 
 export async function uploadMediaFiles(files: File[], items: MediaItem[]) {
@@ -68,7 +90,13 @@ export async function uploadMediaFiles(files: File[], items: MediaItem[]) {
         body: formData,
     })
 
-    return payload.state
+    return {
+        state: payload.state,
+        warnings: payload.warnings ?? [],
+    } satisfies {
+        state: SharedPlaybackState
+        warnings: ApiWarning[]
+    }
 }
 
 export async function deleteMediaItem(id: string) {
@@ -138,4 +166,33 @@ export async function sendPlaybackAction(action: PlaybackAction, index?: number)
     const payload = await requestJson<StateResponse>(getServerHttpUrl('/api/playback'), jsonRequest(body))
 
     return payload.state
+}
+
+export async function advancePlayer(
+    expectedItemId: string | null,
+    expectedVersion: number,
+    reason: PlayerAdvanceReason,
+    screenId?: string | null,
+) {
+    const payload = await requestJson<PlayerManifestResponse>(
+        getServerHttpUrl('/api/player/advance'),
+        jsonRequest<PlayerAdvanceRequest>({ expectedItemId, expectedVersion, reason, screenId }),
+    )
+
+    return payload.manifest
+}
+
+export async function reportPlayerIssue(
+    itemId: string | null,
+    expectedVersion: number,
+    reason: PlayerIssueReason,
+    detail?: string | null,
+    screenId?: string | null,
+) {
+    const payload = await requestJson<PlayerManifestResponse>(
+        getServerHttpUrl('/api/player/issues'),
+        jsonRequest<PlayerIssueRequest>({ itemId, expectedVersion, reason, detail, screenId }),
+    )
+
+    return payload.manifest
 }

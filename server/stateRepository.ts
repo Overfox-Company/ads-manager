@@ -1,7 +1,7 @@
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { MediaItem, Orientation, PlaybackStatus } from '../src/types/media'
-import type { SharedPlaybackState } from '../src/types/network'
+import type { PlayerIssueReason, SharedPlaybackState } from '../src/types/network'
 
 const DEFAULT_IMAGE_DURATION_SECONDS = 10
 const MIN_IMAGE_DURATION_SECONDS = 3
@@ -100,6 +100,14 @@ function stampState(state: SharedPlaybackState) {
 
 function getCurrentItemId(state: SharedPlaybackState) {
     return state.playlist[state.currentIndex]?.id ?? null
+}
+
+function isIndexInRange(index: number, playlistLength: number) {
+    if (playlistLength === 0) {
+        return index === 0
+    }
+
+    return index >= 0 && index < playlistLength
 }
 
 export class StateRepository {
@@ -315,6 +323,83 @@ export class StateRepository {
         await this.persist()
 
         return this.state
+    }
+
+    async advanceFromPlayer(expectedItemId: string | null, expectedVersion?: number | null) {
+        if (this.state.playlist.length === 0 || this.state.status !== 'playing') {
+            return this.state
+        }
+
+        if (!this.matchesExpectedPlayback(expectedItemId, expectedVersion)) {
+            return this.state
+        }
+
+        this.state = stampState(
+            normalizeState({
+                ...this.state,
+                currentIndex: (this.state.currentIndex + 1) % this.state.playlist.length,
+                status: 'playing',
+            }),
+        )
+        await this.persist()
+
+        return this.state
+    }
+
+    async reportPlayerIssue(
+        expectedItemId: string | null,
+        expectedVersion: number | null | undefined,
+        reason: PlayerIssueReason,
+    ) {
+        if (reason === 'load-timeout' || reason === 'media-error' || reason === 'unsupported') {
+            if (this.state.playlist.length <= 1) {
+                if (!this.matchesExpectedPlayback(expectedItemId, expectedVersion)) {
+                    return this.state
+                }
+
+                this.state = stampState({
+                    ...this.state,
+                    status: 'stopped',
+                })
+                await this.persist()
+
+                return this.state
+            }
+
+            return this.advanceFromPlayer(expectedItemId, expectedVersion)
+        }
+
+        return this.state
+    }
+
+    async repairCurrentIndex() {
+        const normalizedIndex = clampIndex(this.state.currentIndex, this.state.playlist.length)
+
+        if (normalizedIndex === this.state.currentIndex && isIndexInRange(this.state.currentIndex, this.state.playlist.length)) {
+            return this.state
+        }
+
+        this.state = stampState(
+            normalizeState({
+                ...this.state,
+                currentIndex: normalizedIndex,
+            }),
+        )
+        await this.persist()
+
+        return this.state
+    }
+
+    private matchesExpectedPlayback(expectedItemId: string | null, expectedVersion?: number | null) {
+        if (typeof expectedVersion === 'number' && expectedVersion !== this.state.updatedAt) {
+            return false
+        }
+
+        if (!expectedItemId) {
+            return true
+        }
+
+        return getCurrentItemId(this.state) === expectedItemId
     }
 
     private async persist() {

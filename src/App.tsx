@@ -7,13 +7,12 @@ import './App.css'
 function App() {
   return (
     <BrowserRouter>
-      <AppBootstrap>
-        <Routes>
-          <Route path="/" element={<AdminPage />} />
-          <Route path="/player" element={<PlayerPage />} />
-          <Route path="*" element={<Navigate replace to="/" />} />
-        </Routes>
-      </AppBootstrap>
+      <Routes>
+        <Route path="/" element={<AppBootstrap><AdminPage /></AppBootstrap>} />
+        <Route path="/player" element={<PlayerPage />} />
+        <Route path="/player/:screenId" element={<PlayerPage />} />
+        <Route path="*" element={<Navigate replace to="/" />} />
+      </Routes>
     </BrowserRouter>
   )
 }

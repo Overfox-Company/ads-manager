@@ -18,6 +18,7 @@ import {
     updateOrientation,
     uploadMediaFiles,
 } from '../lib/serverApi'
+import { getMediaCompatibilityWarnings } from '../lib/mediaPolicy'
 import { ORIENTATION_OPTIONS, createMediaItemFromFile } from '../lib/media'
 import { usePlaylistStore } from '../store/usePlaylistStore'
 import type { MediaItem, Orientation } from '../types/media'
@@ -55,6 +56,7 @@ export function AdminPage() {
     const [isUploading, setIsUploading] = useState(false)
     const [selectedFiles, setSelectedFiles] = useState<string[]>([])
     const [uploadErrorMessage, setUploadErrorMessage] = useState<string | null>(null)
+    const [uploadWarningMessages, setUploadWarningMessages] = useState<string[]>([])
 
     const playlist = usePlaylistStore((state) => state.playlist)
     const mediaUrls = usePlaylistStore((state) => state.mediaUrls)
@@ -73,6 +75,7 @@ export function AdminPage() {
         setIsUploading(true)
         setSelectedFiles(files.map((file) => file.name))
         setUploadErrorMessage(null)
+        setUploadWarningMessages([])
 
         try {
             const uploads: Array<{ file: File; item: MediaItem }> = []
@@ -94,10 +97,21 @@ export function AdminPage() {
                 return
             }
 
-            const nextState = await uploadMediaFiles(
+            const clientWarnings = Array.from(new Set(
+                uploads
+                    .flatMap((entry) => getMediaCompatibilityWarnings(entry.item))
+                    .map((warning) => warning.message),
+            ))
+
+            const uploadResult = await uploadMediaFiles(
                 uploads.map((entry) => entry.file),
                 uploads.map((entry) => entry.item),
             )
+
+            setUploadWarningMessages(Array.from(new Set([
+                ...clientWarnings,
+                ...uploadResult.warnings.map((warning) => warning.message),
+            ])))
 
             for (const entry of uploads) {
                 await saveMediaBlob({
@@ -112,7 +126,7 @@ export function AdminPage() {
 
             const store = usePlaylistStore.getState()
 
-            store.hydrateRemoteState(nextState)
+            store.hydrateRemoteState(uploadResult.state)
             void store.ensureMediaUrls()
         } catch (error) {
             console.error(error)
@@ -269,6 +283,7 @@ export function AdminPage() {
                             itemCount={playlist.length}
                             selectedFiles={selectedFiles}
                             uploadErrorMessage={uploadErrorMessage}
+                            uploadWarningMessages={uploadWarningMessages}
                             onFilesAccepted={handleFilesAccepted}
                         />
                     </div>
