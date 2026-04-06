@@ -1,9 +1,10 @@
 import { create } from 'zustand'
 import { getMediaBlob, saveMediaBlob } from '../lib/indexedDb'
 import { getMediaContentUrl } from '../lib/serverApi'
-import { DEFAULT_IMAGE_DURATION_SECONDS } from '../lib/media'
-import type { MediaItem, Orientation, PlaybackStatus } from '../types/media'
-import type { SharedPlaybackState } from '../types/network'
+import { DEFAULT_IMAGE_DURATION_SECONDS, ensureMediaItemVariants, getPreviewStorageId } from '../lib/media'
+import { DEFAULT_PLAYBACK_PROFILE } from '../lib/playbackProfiles'
+import type { MediaItem, Orientation, PlaybackProfileId, PlaybackStatus } from '../types/media'
+import type { PlaybackTelemetryReport, SharedPlaybackState } from '../types/network'
 
 type PlaylistStore = {
     playlist: MediaItem[]
@@ -13,6 +14,8 @@ type PlaylistStore = {
     status: PlaybackStatus
     orientation: Orientation
     imageDurationSeconds: number
+    playbackProfile: PlaybackProfileId
+    lastPlaybackReport: PlaybackTelemetryReport | null
     lastCommandAt: number
     updatedAt: number
     hydrateRemoteState: (state: SharedPlaybackState) => void
@@ -47,7 +50,7 @@ async function cacheRemoteMedia(item: MediaItem) {
     pendingMediaCacheIds.add(item.id)
 
     try {
-        const response = await fetch(getMediaContentUrl(item.id))
+        const response = await fetch(getMediaContentUrl(getPreviewStorageId(item)))
 
         if (!response.ok) {
             return
@@ -102,32 +105,37 @@ export const usePlaylistStore = create<PlaylistStore>()(
         status: 'stopped',
         orientation: 'horizontal',
         imageDurationSeconds: DEFAULT_IMAGE_DURATION_SECONDS,
+        playbackProfile: DEFAULT_PLAYBACK_PROFILE,
+        lastPlaybackReport: null,
         lastCommandAt: 0,
         updatedAt: 0,
         hydrateRemoteState: (remoteState) => {
             set((state) => {
+                const normalizedPlaylist = remoteState.playlist.map((item) => ensureMediaItemVariants(item))
                 const normalized = normalizeReferences(
-                    remoteState.playlist,
+                    normalizedPlaylist,
                     remoteState.currentIndex,
                     remoteState.selectedItemId,
                 )
                 const nextMediaUrls = { ...state.mediaUrls }
 
                 for (const [id, url] of Object.entries(nextMediaUrls)) {
-                    if (!remoteState.playlist.some((item) => item.id === id)) {
+                    if (!normalizedPlaylist.some((item) => item.id === id)) {
                         revokeObjectUrl(url)
                         delete nextMediaUrls[id]
                     }
                 }
 
                 return {
-                    playlist: remoteState.playlist,
+                    playlist: normalizedPlaylist,
                     mediaUrls: nextMediaUrls,
                     currentIndex: normalized.currentIndex,
                     selectedItemId: normalized.selectedItemId,
-                    status: remoteState.playlist.length === 0 ? 'stopped' : remoteState.status,
+                    status: normalizedPlaylist.length === 0 ? 'stopped' : remoteState.status,
                     orientation: remoteState.orientation,
                     imageDurationSeconds: clampImageDuration(remoteState.imageDurationSeconds),
+                    playbackProfile: remoteState.playbackProfile,
+                    lastPlaybackReport: remoteState.lastPlaybackReport,
                     lastCommandAt: remoteState.lastCommandAt,
                     updatedAt: remoteState.updatedAt,
                 }
@@ -146,7 +154,7 @@ export const usePlaylistStore = create<PlaylistStore>()(
                 const blob = await getMediaBlob(item.id)
 
                 if (!blob) {
-                    loadedUrls[item.id] = getMediaContentUrl(item.id)
+                    loadedUrls[item.id] = getMediaContentUrl(getPreviewStorageId(item))
                     void cacheRemoteMedia(item)
                     continue
                 }

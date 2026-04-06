@@ -1,18 +1,19 @@
 import { useEffect, useRef } from 'react'
-import type { PlayerIssueReason, PlayerManifestItem } from '../types/network'
+import type { PlayerIssueReason, PlayerManifestItem, PlayerManifestVariant } from '../types/network'
 
 interface MediaRendererProps {
     item: PlayerManifestItem
+    variant?: PlayerManifestVariant | null
     onReady: () => void
     onCompleted: () => void
     onFailure: (reason: PlayerIssueReason, detail: string) => void
 }
 
-export function MediaRenderer({ item, onReady, onCompleted, onFailure }: MediaRendererProps) {
+export function MediaRenderer({ item, variant, onReady, onCompleted, onFailure }: MediaRendererProps) {
     const videoRef = useRef<HTMLVideoElement | null>(null)
 
     useEffect(() => {
-        if (item.type !== 'video') {
+        if (item.type !== 'video' || !variant) {
             return
         }
 
@@ -22,12 +23,12 @@ export function MediaRenderer({ item, onReady, onCompleted, onFailure }: MediaRe
             return
         }
 
-        const compatibility = item.mime ? video.canPlayType(item.mime) : ''
+        const compatibility = variant.mimeType ? video.canPlayType(variant.mimeType) : ''
 
         if (!compatibility) {
-            onFailure('unsupported', `El navegador reporta compatibilidad insuficiente para ${item.mime || 'video desconocido'}.`)
+            onFailure('unsupported', `El navegador reporta compatibilidad insuficiente para ${variant.mimeType || 'video desconocido'}.`)
         }
-    }, [item.id, item.mime, item.type, onFailure])
+    }, [item.id, item.type, onFailure, variant])
 
     if (item.type === 'image') {
         return (
@@ -38,7 +39,7 @@ export function MediaRenderer({ item, onReady, onCompleted, onFailure }: MediaRe
                     loading="eager"
                     onError={() => onFailure('media-error', 'No se pudo cargar la imagen actual.')}
                     onLoad={onReady}
-                    src={item.src}
+                    src={item.src ?? ''}
                 />
             </div>
         )
@@ -66,7 +67,7 @@ export function MediaRenderer({ item, onReady, onCompleted, onFailure }: MediaRe
                 playsInline
                 preload="metadata"
                 ref={videoRef}
-                src={item.src}
+                src={variant?.src ?? ''}
             />
         </div>
     )

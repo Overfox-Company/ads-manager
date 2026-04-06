@@ -1,4 +1,33 @@
-import type { MediaItem, Orientation, PlaybackStatus } from './media'
+import type {
+    AudioCodec,
+    MediaItem,
+    MediaVariant,
+    Orientation,
+    PlaybackProfileId,
+    PlaybackStatus,
+    UploadMediaDescriptor,
+    VideoCodec,
+    VideoContainer,
+} from './media'
+
+export interface PlaybackTelemetryReport {
+    screenId: string | null
+    itemId: string | null
+    requestedProfile: PlaybackProfileId
+    resolvedProfile: PlaybackProfileId | null
+    variantId: string | null
+    variantLabel: string | null
+    videoCodec: VideoCodec | null
+    audioCodec: AudioCodec | null
+    container: VideoContainer | null
+    width: number | null
+    height: number | null
+    fps: number | null
+    bitrateKbps: number | null
+    didFallback: boolean
+    reason: string | null
+    updatedAt: number
+}
 
 export interface SharedPlaybackState {
     playlist: MediaItem[]
@@ -7,6 +36,8 @@ export interface SharedPlaybackState {
     status: PlaybackStatus
     orientation: Orientation
     imageDurationSeconds: number
+    playbackProfile: PlaybackProfileId
+    lastPlaybackReport: PlaybackTelemetryReport | null
     lastCommandAt: number
     updatedAt: number
 }
@@ -24,11 +55,17 @@ export interface ApiWarning {
 
 export interface PlayerManifestItem {
     id: string
+    storageId: string
     name: string
     type: 'image' | 'video'
-    src: string
-    mime: string
+    src: string | null
+    mime: string | null
     duration: number | null
+    variants: PlayerManifestVariant[]
+}
+
+export interface PlayerManifestVariant extends MediaVariant {
+    src: string
 }
 
 export interface PlayerManifest {
@@ -41,6 +78,8 @@ export interface PlayerManifest {
     currentItemId: string | null
     orientation: Orientation
     imageDurationSeconds: number
+    playbackProfile: PlaybackProfileId
+    lastPlaybackReport: PlaybackTelemetryReport | null
     updatedAt: number
     items: PlayerManifestItem[]
 }
@@ -83,6 +122,10 @@ export interface PlaylistSelectionRequest {
     selectedItemId: string | null
 }
 
+export interface PlaybackProfileRequest {
+    profile: PlaybackProfileId
+}
+
 export interface PlaylistCurrentIndexRequest {
     index: number
 }
@@ -99,6 +142,32 @@ export interface DurationOverrideRequest {
     id: string
     seconds: number | null
 }
+
+export interface PlayerPlaybackReportRequest {
+    expectedVersion: number
+    itemId: string | null
+    screenId?: string | null
+    requestedProfile: PlaybackProfileId
+    resolvedProfile: PlaybackProfileId | null
+    variantId: string | null
+    variantLabel: string | null
+    videoCodec: VideoCodec | null
+    audioCodec: AudioCodec | null
+    container: VideoContainer | null
+    width: number | null
+    height: number | null
+    fps: number | null
+    bitrateKbps: number | null
+    didFallback: boolean
+    reason?: string | null
+}
+
+export interface UploadMediaResponse extends StateResponse {
+    state: SharedPlaybackState
+    uploadedMediaIds?: string[]
+}
+
+export type UploadMediaMetadata = UploadMediaDescriptor[]
 
 export type ServerSocketMessage = {
     type: 'STATE_SYNC'

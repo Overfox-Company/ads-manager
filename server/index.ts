@@ -4,13 +4,22 @@ import http from 'node:http'
 import express from 'express'
 import multer from 'multer'
 import WebSocket, { WebSocketServer } from 'ws'
+import { ensureMediaItemVariants } from '../src/lib/media'
 import { getMediaCompatibilityWarnings } from '../src/lib/mediaPolicy'
-import type { MediaItem, MediaType, Orientation } from '../src/types/media'
+import {
+    getPlaybackProfileDefinition,
+    getPlaybackProfileFallbackChain,
+    getPrimaryProfileForVariant,
+    inferSupportedProfiles,
+} from '../src/lib/playbackProfiles'
+import type { MediaItem, MediaType, MediaVariant, Orientation, UploadMediaDescriptor } from '../src/types/media'
 import type {
     DurationOverrideRequest,
     ImageDurationRequest,
     OrientationRequest,
     PlaybackActionRequest,
+    PlaybackProfileRequest,
+    PlayerPlaybackReportRequest,
     PlayerAdvanceRequest,
     PlayerIssueRequest,
     PlayerManifest,
@@ -56,6 +65,127 @@ function buildPlaylistId(items: MediaItem[]) {
     return items.length === 0 ? 'empty' : items.map((item) => item.id).join('|')
 }
 
+function selectPreviewVariant(item: MediaItem) {
+    if (item.type !== 'video') {
+        return null
+    }
+
+    for (const profile of getPlaybackProfileFallbackChain('balanced')) {
+        const variant = item.variants.find((candidate) =>
+            candidate.profile === profile || candidate.supportedProfiles.includes(profile),
+        )
+
+        if (variant) {
+            return variant
+        }
+    }
+
+    return item.variants[0] ?? null
+}
+
+function createVideoVariant(assetId: string, descriptor: UploadMediaDescriptor) {
+    const supportedProfiles = inferSupportedProfiles(
+        descriptor.variantProfileHint,
+        descriptor.videoCodecHint,
+        descriptor.width,
+    )
+    const primaryProfile = getPrimaryProfileForVariant(supportedProfiles)
+    const primaryProfileDefinition = getPlaybackProfileDefinition(primaryProfile)
+
+    return {
+        id: `${assetId}:${descriptor.id}`,
+        storageId: descriptor.id,
+        label: primaryProfileDefinition.label,
+        profile: primaryProfile,
+        supportedProfiles,
+        container: descriptor.containerHint,
+        videoCodec: descriptor.videoCodecHint,
+        audioCodec: descriptor.audioCodecHint,
+        width: descriptor.width,
+        height: descriptor.height,
+        fps: descriptor.fps,
+        bitrateKbps: descriptor.bitrateKbps,
+        mimeType: descriptor.mimeType,
+        isMaster: descriptor.variantProfileHint === null,
+    } satisfies MediaVariant
+}
+
+function buildUploadAssets(entries: Array<{ descriptor: UploadMediaDescriptor; fileBuffer: Buffer }>) {
+    const groupedUploads = new Map<string, Array<{ descriptor: UploadMediaDescriptor; fileBuffer: Buffer }>>()
+
+    for (const entry of entries) {
+        const groupKey = entry.descriptor.type === 'video' && entry.descriptor.variantGroupKey
+            ? entry.descriptor.variantGroupKey
+            : entry.descriptor.id
+        const existingGroup = groupedUploads.get(groupKey) ?? []
+
+        existingGroup.push(entry)
+        groupedUploads.set(groupKey, existingGroup)
+    }
+
+    return Array.from(groupedUploads.values()).map((groupEntries) => {
+        const firstDescriptor = groupEntries[0]?.descriptor
+
+        if (!firstDescriptor) {
+            throw new Error('Grupo de uploads invalido')
+        }
+
+        if (firstDescriptor.type === 'image') {
+            return {
+                item: ensureMediaItemVariants({
+                    id: firstDescriptor.id,
+                    storageId: firstDescriptor.id,
+                    name: firstDescriptor.name,
+                    type: 'image',
+                    mimeType: firstDescriptor.mimeType,
+                    size: firstDescriptor.size,
+                    createdAt: firstDescriptor.createdAt,
+                    durationOverrideSeconds: null,
+                    naturalDurationSeconds: null,
+                    variants: [],
+                }),
+                files: [{ storageId: firstDescriptor.id, fileBuffer: groupEntries[0].fileBuffer }],
+            }
+        }
+
+        const assetId = firstDescriptor.id
+        const variants = groupEntries.map((entry) => createVideoVariant(assetId, entry.descriptor))
+        const previewVariant = variants.find((variant) =>
+            variant.supportedProfiles.includes('compatibility') || variant.profile === 'compatibility',
+        ) ?? selectPreviewVariant({
+            id: assetId,
+            storageId: firstDescriptor.id,
+            name: firstDescriptor.name,
+            type: 'video',
+            mimeType: firstDescriptor.mimeType,
+            size: firstDescriptor.size,
+            createdAt: firstDescriptor.createdAt,
+            durationOverrideSeconds: null,
+            naturalDurationSeconds: firstDescriptor.naturalDurationSeconds,
+            variants,
+        }) ?? variants[0]
+
+        return {
+            item: ensureMediaItemVariants({
+                id: assetId,
+                storageId: previewVariant?.storageId ?? firstDescriptor.id,
+                name: firstDescriptor.name,
+                type: 'video',
+                mimeType: previewVariant?.mimeType ?? firstDescriptor.mimeType,
+                size: groupEntries.reduce((total, entry) => total + entry.descriptor.size, 0),
+                createdAt: Math.min(...groupEntries.map((entry) => entry.descriptor.createdAt)),
+                durationOverrideSeconds: null,
+                naturalDurationSeconds: firstDescriptor.naturalDurationSeconds,
+                variants,
+            }),
+            files: groupEntries.map((entry) => ({
+                storageId: entry.descriptor.id,
+                fileBuffer: entry.fileBuffer,
+            })),
+        }
+    })
+}
+
 function buildPlayerManifest(request: express.Request, state = repository.getState()) {
     const origin = getRequestOrigin(request)
 
@@ -69,16 +199,25 @@ function buildPlayerManifest(request: express.Request, state = repository.getSta
         currentItemId: state.playlist[state.currentIndex]?.id ?? null,
         orientation: state.orientation,
         imageDurationSeconds: state.imageDurationSeconds,
+        playbackProfile: state.playbackProfile,
+        lastPlaybackReport: state.lastPlaybackReport,
         updatedAt: state.updatedAt,
         items: state.playlist.map((item) => ({
             id: item.id,
+            storageId: item.storageId,
             name: item.name,
             type: item.type,
-            src: new URL(`/api/media/${item.id}/content`, `${origin}/`).toString(),
+            src: new URL(`/api/media/${item.storageId}/content`, `${origin}/`).toString(),
             mime: item.mimeType,
             duration: item.type === 'image'
                 ? item.durationOverrideSeconds ?? state.imageDurationSeconds
-                : null,
+                : item.naturalDurationSeconds,
+            variants: item.type === 'video'
+                ? item.variants.map((variant) => ({
+                    ...variant,
+                    src: new URL(`/api/media/${variant.storageId}/content`, `${origin}/`).toString(),
+                }))
+                : [],
         })),
     } satisfies PlayerManifest
 }
@@ -171,7 +310,7 @@ async function main() {
             return sendError(response, 400, 'Debes enviar archivos y metadata valida')
         }
 
-        let metadata: MediaItem[]
+        let metadata: UploadMediaDescriptor[]
 
         try {
             const parsed = JSON.parse(metadataRaw) as unknown
@@ -180,7 +319,7 @@ async function main() {
                 return sendError(response, 400, 'La metadata del upload debe ser una lista')
             }
 
-            metadata = parsed as MediaItem[]
+            metadata = parsed as UploadMediaDescriptor[]
         } catch {
             return sendError(response, 400, 'No se pudo interpretar la metadata del upload')
         }
@@ -203,7 +342,7 @@ async function main() {
             }
 
             return [{
-                item: {
+                descriptor: {
                     ...item,
                     name: item.name || file.originalname,
                     type,
@@ -214,8 +353,10 @@ async function main() {
             }]
         })
 
-        const state = await repository.appendUploads(entries)
-        const warnings = entries.flatMap(({ item }) =>
+        const uploadAssets = buildUploadAssets(entries)
+
+        const state = await repository.appendUploads(uploadAssets)
+        const warnings = uploadAssets.flatMap(({ item }) =>
             getMediaCompatibilityWarnings(item).map((warning) => ({
                 ...warning,
                 itemId: item.id,
@@ -227,14 +368,16 @@ async function main() {
     })
 
     app.get('/api/media/:id/content', (request, response) => {
-        const item = repository.findItem(request.params.id)
+        const item = repository.findStorageOwner(request.params.id)
 
         if (!item) {
             return sendError(response, 404, 'No existe el medio solicitado')
         }
 
-        response.type(item.mimeType)
-        return response.sendFile(repository.getMediaPath(item.id))
+        const variant = item.variants.find((candidate) => candidate.storageId === request.params.id) ?? null
+
+        response.type(variant?.mimeType ?? item.mimeType)
+        return response.sendFile(repository.getMediaPath(request.params.id))
     })
 
     app.delete('/api/media/:id', async (request, response) => {
@@ -308,6 +451,26 @@ async function main() {
         return sendState(response, state)
     })
 
+    app.post('/api/settings/playback-profile', async (request, response) => {
+        const body = request.body as PlaybackProfileRequest
+
+        if (
+            !body ||
+            (body.profile !== 'compatibility' &&
+                body.profile !== 'balanced' &&
+                body.profile !== 'modern-efficiency' &&
+                body.profile !== 'modern-quality' &&
+                body.profile !== 'av1-experimental')
+        ) {
+            return sendError(response, 400, 'profile es requerido')
+        }
+
+        const state = await repository.setPlaybackProfile(body.profile)
+
+        broadcastState(websocketServer)
+        return sendState(response, state)
+    })
+
     app.post('/api/playlist/duration-override', async (request, response) => {
         const body = request.body as DurationOverrideRequest
 
@@ -370,6 +533,36 @@ async function main() {
 
         broadcastState(websocketServer)
         return sendPlayerManifest(request, response, state)
+    })
+
+    app.post('/api/player/playback-report', async (request, response) => {
+        const body = request.body as PlayerPlaybackReportRequest
+
+        if (!body || typeof body.expectedVersion !== 'number') {
+            return sendError(response, 400, 'Payload invalido para reportar reproduccion')
+        }
+
+        const state = await repository.setPlaybackReport({
+            screenId: body.screenId ?? null,
+            itemId: body.itemId ?? null,
+            requestedProfile: body.requestedProfile,
+            resolvedProfile: body.resolvedProfile ?? null,
+            variantId: body.variantId ?? null,
+            variantLabel: body.variantLabel ?? null,
+            videoCodec: body.videoCodec ?? null,
+            audioCodec: body.audioCodec ?? null,
+            container: body.container ?? null,
+            width: body.width ?? null,
+            height: body.height ?? null,
+            fps: body.fps ?? null,
+            bitrateKbps: body.bitrateKbps ?? null,
+            didFallback: body.didFallback,
+            reason: body.reason ?? null,
+            updatedAt: Date.now(),
+        }, body.expectedVersion)
+
+        broadcastState(websocketServer)
+        return sendState(response, state)
     })
 
     await maybeEnableStaticHosting(app)

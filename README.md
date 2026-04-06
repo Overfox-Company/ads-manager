@@ -54,6 +54,56 @@ No se asume como formato base `AV1`, `VP9`, `HEVC/H.265` ni streaming adaptativo
 
 El flujo actual valida y avisa cuando un video no llega como `video/mp4`. No se hace transcodificacion automatica en esta base, asi que la normalizacion recomendada debe ocurrir antes del upload o en un proceso de ingesta backend futuro.
 
+## Perfiles de reproduccion y variantes
+
+La app ahora separa `perfil solicitado` de `variante realmente reproducida`.
+
+Perfiles disponibles:
+
+- `Compatibilidad maxima`
+- `Balanceado`
+- `Eficiencia moderna`
+- `Alta calidad moderna`
+- `Experimental AV1`
+
+Cada video puede declarar variantes con codec, contenedor, resolucion, bitrate y perfiles soportados. El player:
+
+- recibe el perfil global solicitado desde administracion
+- inspecciona las variantes disponibles del item actual
+- valida compatibilidad con `canPlayType(...)`
+- intenta la mejor variante del perfil pedido
+- si falla, baja automaticamente al siguiente perfil seguro
+- informa al admin que perfil pidio, cual termino reproduciendo y por que hizo fallback
+
+### Ruta minima viable actual
+
+En este repo no hay `ffmpeg` integrado ni disponible por defecto, asi que la generacion automatica de variantes queda preparada arquitectonicamente pero no se ejecuta sola.
+
+La forma minima de cargar variantes reales hoy es subir archivos ya derivados con sufijos de perfil en el nombre, por ejemplo:
+
+- `promo__compat.mp4`
+- `promo__balanced.mp4`
+- `promo__modern-hevc.mp4`
+- `promo__modern-quality.mp4`
+- `promo__av1.mp4`
+
+Si varios archivos comparten el mismo nombre base y cambian solo el sufijo, el backend los agrupa como un solo asset de playlist con multiples variantes.
+
+Si subes solo un archivo, el sistema lo registra como una variante unica y resuelve el fallback hacia el perfil seguro mas cercano cuando no exista una derivada mas moderna.
+
+### Pipeline ideal pendiente
+
+La arquitectura ya queda lista para que, cuando exista `ffmpeg` en el host, la ingesta haga esto:
+
+1. guardar el master original
+2. generar `compat_h264`
+3. generar `balanced_h264`
+4. generar `modern_hevc`
+5. opcionalmente `premium_hevc` y `av1_experimental`
+6. registrar metadata tecnica y poster
+
+Ese paso no se fuerza en esta base para no fingir una capacidad que hoy no existe en el entorno.
+
 ## Arquitectura de reproduccion TV
 
 La ruta `/player` ya no comparte la store pesada ni la cache local del admin.

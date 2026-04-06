@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { advancePlayer, reportPlayerIssue } from '../lib/serverApi'
+import { advancePlayer, reportPlayerIssue, reportPlayerPlayback } from '../lib/serverApi'
 import { IdleState } from '../player/IdleState'
 import { MediaRenderer } from '../player/MediaRenderer'
+import { detectDevicePlaybackCapabilities, resolvePlaybackVariant, type ResolvedPlaybackDecision } from '../player/playbackVariantResolver'
 import { PlayerStage } from '../player/PlayerStage'
 import { usePlayerManifest } from '../player/usePlayerManifest'
 import type { PlayerAdvanceReason, PlayerIssueReason, PlayerManifest } from '../types/network'
@@ -65,11 +66,17 @@ function resolveIdleState(manifest: PlayerManifest | null, errorMessage: string 
 export function PlayerPage() {
     const { screenId } = useParams<{ screenId?: string }>()
     const { manifest, isLoading, errorMessage, replaceManifest } = usePlayerManifest(screenId)
+    const deviceCapabilities = useMemo(() => detectDevicePlaybackCapabilities(), [])
     const [readyState, setReadyState] = useState<{ key: string; ready: boolean }>({ key: '', ready: false })
     const [runtimeState, setRuntimeState] = useState<{ key: string; detail: string | null }>({
         key: '',
         detail: null,
     })
+    const [variantState, setVariantState] = useState<{
+        key: string
+        attemptedVariantIds: string[]
+        decision: ResolvedPlaybackDecision | null
+    }>({ key: '', attemptedVariantIds: [], decision: null })
     const [exhaustedPlaylistId, setExhaustedPlaylistId] = useState<string | null>(null)
     const failureHistoryRef = useRef<{ playlistId: string; itemIds: Set<string> }>({
         playlistId: '',
@@ -88,8 +95,13 @@ export function PlayerPage() {
     const currentPlaybackKey = manifest && currentItem
         ? `${manifest.version}:${currentItem.id}`
         : 'idle'
-    const isMediaReady = readyState.key === currentPlaybackKey && readyState.ready
-    const runtimeDetail = runtimeState.key === currentPlaybackKey ? runtimeState.detail : null
+    const activeDecision = variantState.key === currentPlaybackKey ? variantState.decision : null
+    const activeVariant = currentItem?.type === 'video' ? activeDecision?.variant ?? null : null
+    const renderPlaybackKey = currentItem?.type === 'video'
+        ? `${currentPlaybackKey}:${activeVariant?.id ?? 'no-variant'}`
+        : currentPlaybackKey
+    const isMediaReady = readyState.key === renderPlaybackKey && readyState.ready
+    const runtimeDetail = runtimeState.key === renderPlaybackKey ? runtimeState.detail : null
 
     useEffect(() => {
         if (!manifest) {
@@ -138,6 +150,63 @@ export function PlayerPage() {
         return true
     }
 
+    useEffect(() => {
+        if (!manifest || !currentItem || currentItem.type !== 'video') {
+            setVariantState({ key: currentPlaybackKey, attemptedVariantIds: [], decision: null })
+            return
+        }
+
+        const decision = resolvePlaybackVariant(currentItem, manifest.playbackProfile, deviceCapabilities)
+
+        setVariantState({
+            key: currentPlaybackKey,
+            attemptedVariantIds: decision.variant ? [decision.variant.id] : [],
+            decision,
+        })
+        setReadyState({ key: '', ready: false })
+        setRuntimeState({
+            key: `${currentPlaybackKey}:${decision.variant?.id ?? 'no-variant'}`,
+            detail: decision.reason,
+        })
+    }, [currentItem, currentPlaybackKey, deviceCapabilities, manifest])
+
+    const tryVariantFallback = (detail: string) => {
+        if (!manifest || !currentItem || currentItem.type !== 'video') {
+            return false
+        }
+
+        const attemptedVariantIds = variantState.key === currentPlaybackKey ? variantState.attemptedVariantIds : []
+        const nextDecision = resolvePlaybackVariant(
+            currentItem,
+            manifest.playbackProfile,
+            deviceCapabilities,
+            attemptedVariantIds,
+        )
+
+        if (!nextDecision.variant) {
+            return false
+        }
+
+        const fallbackReason = nextDecision.reason ?? detail
+
+        setVariantState({
+            key: currentPlaybackKey,
+            attemptedVariantIds: [...attemptedVariantIds, nextDecision.variant.id],
+            decision: {
+                ...nextDecision,
+                didFallback: true,
+                reason: fallbackReason,
+            },
+        })
+        setReadyState({ key: '', ready: false })
+        setRuntimeState({
+            key: `${currentPlaybackKey}:${nextDecision.variant.id}`,
+            detail: fallbackReason,
+        })
+
+        return true
+    }
+
     const handleAdvance = async (reason: PlayerAdvanceReason) => {
         if (!manifest || !currentItem || !withEventGuard(reason)) {
             return
@@ -178,6 +247,22 @@ export function PlayerPage() {
     }
 
     useEffect(() => {
+        if (
+            !manifest ||
+            !manifest.isPlaying ||
+            !currentItem ||
+            currentItem.type !== 'video' ||
+            variantState.key !== currentPlaybackKey ||
+            activeVariant ||
+            exhaustedPlaylistId === manifest.playlistId
+        ) {
+            return
+        }
+
+        void handleFailure('unsupported', activeDecision?.reason ?? 'No hay variante reproducible para el perfil solicitado.')
+    }, [activeDecision?.reason, activeVariant, currentItem, exhaustedPlaylistId, handleFailure, manifest])
+
+    useEffect(() => {
         if (!manifest || !manifest.isPlaying || !currentItem || exhaustedPlaylistId === manifest.playlistId) {
             return
         }
@@ -191,7 +276,7 @@ export function PlayerPage() {
                 return
             }
 
-            const eventKey = `${manifest.version}:${currentItem.id}:load-timeout`
+            const eventKey = `${renderPlaybackKey}:load-timeout`
 
             if (handledEventKeysRef.current.has(eventKey)) {
                 return
@@ -204,33 +289,36 @@ export function PlayerPage() {
             handledEventKeysRef.current.add(eventKey)
 
             setRuntimeState({
-                key: currentPlaybackKey,
+                key: renderPlaybackKey,
                 detail: 'El medio actual no respondio dentro del tiempo esperado.',
             })
-            markFailedItem(currentItem.id, manifest)
 
-            void reportPlayerIssue(
-                currentItem.id,
-                manifest.version,
-                'load-timeout',
-                'El medio actual no respondio dentro del tiempo esperado.',
-                screenId,
-            )
-                .then((nextManifest) => {
-                    replaceManifest(nextManifest)
-                })
-                .catch((error) => {
-                    setRuntimeState({
-                        key: currentPlaybackKey,
-                        detail: error instanceof Error ? error.message : 'El medio actual no respondio dentro del tiempo esperado.',
+            if (!tryVariantFallback('La variante actual no respondio dentro del tiempo esperado.')) {
+                markFailedItem(currentItem.id, manifest)
+
+                void reportPlayerIssue(
+                    currentItem.id,
+                    manifest.version,
+                    'load-timeout',
+                    'El medio actual no respondio dentro del tiempo esperado.',
+                    screenId,
+                )
+                    .then((nextManifest) => {
+                        replaceManifest(nextManifest)
                     })
-                })
+                    .catch((error) => {
+                        setRuntimeState({
+                            key: renderPlaybackKey,
+                            detail: error instanceof Error ? error.message : 'El medio actual no respondio dentro del tiempo esperado.',
+                        })
+                    })
+            }
         }, MEDIA_LOAD_TIMEOUT_MS)
 
         return () => {
             window.clearTimeout(timeout)
         }
-    }, [currentItem, currentPlaybackKey, exhaustedPlaylistId, isMediaReady, manifest, replaceManifest, screenId])
+    }, [currentItem, exhaustedPlaylistId, isMediaReady, manifest, renderPlaybackKey, replaceManifest, screenId, tryVariantFallback])
 
     useEffect(() => {
         if (
@@ -268,7 +356,7 @@ export function PlayerPage() {
                 })
                 .catch((error) => {
                     setRuntimeState({
-                        key: currentPlaybackKey,
+                        key: renderPlaybackKey,
                         detail: error instanceof Error ? error.message : 'No se pudo informar al backend que la imagen termino.',
                     })
                 })
@@ -277,12 +365,13 @@ export function PlayerPage() {
         return () => {
             window.clearTimeout(timeout)
         }
-    }, [currentItem, currentPlaybackKey, exhaustedPlaylistId, isMediaReady, manifest, replaceManifest, screenId])
+    }, [currentItem, exhaustedPlaylistId, isMediaReady, manifest, renderPlaybackKey, replaceManifest, screenId])
 
     const shouldRenderMedia = Boolean(
         manifest &&
         manifest.isPlaying &&
         currentItem &&
+        (currentItem.type === 'image' || activeVariant) &&
         exhaustedPlaylistId !== manifest.playlistId,
     )
 
@@ -300,16 +389,42 @@ export function PlayerPage() {
             {shouldRenderMedia && currentItem ? (
                 <MediaRenderer
                     item={currentItem}
-                    key={currentPlaybackKey}
+                    key={renderPlaybackKey}
+                    variant={activeVariant}
                     onCompleted={() => {
                         void handleAdvance('completed')
                     }}
                     onFailure={(reason, detail) => {
-                        void handleFailure(reason, detail)
+                        if (!tryVariantFallback(detail)) {
+                            void handleFailure(reason, detail)
+                        }
                     }}
                     onReady={() => {
-                        setReadyState({ key: currentPlaybackKey, ready: true })
-                        setRuntimeState({ key: currentPlaybackKey, detail: null })
+                        setReadyState({ key: renderPlaybackKey, ready: true })
+                        setRuntimeState({ key: renderPlaybackKey, detail: activeDecision?.reason ?? null })
+
+                        if (manifest && currentItem.type === 'video' && activeDecision) {
+                            void reportPlayerPlayback({
+                                expectedVersion: manifest.version,
+                                itemId: currentItem.id,
+                                screenId,
+                                requestedProfile: manifest.playbackProfile,
+                                resolvedProfile: activeDecision.resolvedProfile,
+                                variantId: activeDecision.variant?.id ?? null,
+                                variantLabel: activeDecision.variant?.label ?? null,
+                                videoCodec: activeDecision.variant?.videoCodec ?? null,
+                                audioCodec: activeDecision.variant?.audioCodec ?? null,
+                                container: activeDecision.variant?.container ?? null,
+                                width: activeDecision.variant?.width ?? null,
+                                height: activeDecision.variant?.height ?? null,
+                                fps: activeDecision.variant?.fps ?? null,
+                                bitrateKbps: activeDecision.variant?.bitrateKbps ?? null,
+                                didFallback: activeDecision.didFallback,
+                                reason: activeDecision.reason,
+                            }).catch((error) => {
+                                console.error(error)
+                            })
+                        }
                     }}
                 />
             ) : (

@@ -1,14 +1,16 @@
-import type { MediaItem, Orientation } from '../types/media'
+import type { Orientation, PlaybackProfileId, UploadMediaDescriptor } from '../types/media'
 import { getServerHttpUrl } from './serverOrigin'
 import type {
     ApiWarning,
     DurationOverrideRequest,
     ImageDurationRequest,
     OrientationRequest,
+    PlaybackProfileRequest,
     PlaybackAction,
     PlaybackActionRequest,
     PlayerAdvanceReason,
     PlayerAdvanceRequest,
+    PlayerPlaybackReportRequest,
     PlayerIssueReason,
     PlayerIssueRequest,
     PlayerManifestResponse,
@@ -17,6 +19,7 @@ import type {
     PlaylistSelectionRequest,
     SharedPlaybackState,
     StateResponse,
+    UploadMediaResponse,
 } from '../types/network'
 
 async function requestJson<T>(input: RequestInfo | URL, init?: RequestInit) {
@@ -76,7 +79,7 @@ export async function fetchPlayerManifest(screenId?: string | null) {
     return payload.manifest
 }
 
-export async function uploadMediaFiles(files: File[], items: MediaItem[]) {
+export async function uploadMediaFiles(files: File[], items: UploadMediaDescriptor[]) {
     const formData = new FormData()
 
     for (const file of files) {
@@ -85,7 +88,7 @@ export async function uploadMediaFiles(files: File[], items: MediaItem[]) {
 
     formData.append('metadata', JSON.stringify(items))
 
-    const payload = await requestJson<StateResponse>(getServerHttpUrl('/api/media/upload'), {
+    const payload = await requestJson<UploadMediaResponse>(getServerHttpUrl('/api/media/upload'), {
         method: 'POST',
         body: formData,
     })
@@ -152,6 +155,15 @@ export async function updateImageDuration(seconds: number) {
     return payload.state
 }
 
+export async function updatePlaybackProfile(profile: PlaybackProfileId) {
+    const payload = await requestJson<StateResponse>(
+        getServerHttpUrl('/api/settings/playback-profile'),
+        jsonRequest<PlaybackProfileRequest>({ profile }),
+    )
+
+    return payload.state
+}
+
 export async function updateItemDurationOverride(id: string, seconds: number | null) {
     const payload = await requestJson<StateResponse>(
         getServerHttpUrl('/api/playlist/duration-override'),
@@ -195,4 +207,13 @@ export async function reportPlayerIssue(
     )
 
     return payload.manifest
+}
+
+export async function reportPlayerPlayback(payload: PlayerPlaybackReportRequest) {
+    const response = await requestJson<StateResponse>(
+        getServerHttpUrl('/api/player/playback-report'),
+        jsonRequest<PlayerPlaybackReportRequest>(payload),
+    )
+
+    return response.state
 }

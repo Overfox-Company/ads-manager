@@ -6,13 +6,19 @@ import {
     MoveIcon,
     PlayIcon,
 } from '@hugeicons-pro/core-solid-standard'
-import { formatDuration } from '../lib/format'
+import { formatBytes, formatDuration } from '../lib/format'
 import { getDisplayDurationSeconds } from '../lib/media'
 import type { MediaItem } from '../types/media'
 import { Icon } from './Icon'
 
+interface PlaylistEntry {
+    item: MediaItem
+    originalIndex: number
+}
+
 interface PlaylistTableProps {
-    items: MediaItem[]
+    entries: PlaylistEntry[]
+    totalCount: number
     mediaUrls: Record<string, string>
     currentIndex: number
     selectedItemId: string | null
@@ -40,7 +46,8 @@ function MediaThumbnail({ item, src }: { item: MediaItem; src?: string }) {
 }
 
 export function PlaylistTable({
-    items,
+    entries,
+    totalCount,
     mediaUrls,
     currentIndex,
     selectedItemId,
@@ -89,93 +96,80 @@ export function PlaylistTable({
         setDropTargetIndex(null)
     }
 
-    if (items.length === 0) {
+    if (entries.length === 0) {
         return (
-            <div className="empty-state">
+            <div className="empty-state empty-state--library">
                 <Icon icon={FileImageIcon} size={24} />
-                <strong>La playlist esta vacia</strong>
-                <p>Carga imagenes o videos para empezar a programar la reproduccion local.</p>
+                <strong>{totalCount === 0 ? 'La biblioteca esta vacia' : 'No hay resultados para este filtro'}</strong>
+                <p>
+                    {totalCount === 0
+                        ? 'Carga imagenes o videos para empezar a programar la reproduccion local.'
+                        : 'Cambia el filtro o agrega nuevos contenidos para completar la playlist.'}
+                </p>
             </div>
         )
     }
 
     return (
         <div className="playlist-wrap">
-            <div className="playlist-header" role="row">
-                <span>Drag</span>
-                <span>#</span>
-                <span>Thumb</span>
-                <span>Archivo</span>
-                <span>Tipo</span>
-                <span>Duracion</span>
-                <span>Acciones</span>
-            </div>
-
-            <div className="playlist-list">
-                {items.map((item, index) => {
+            <div className="playlist-list" role="list">
+                {entries.map(({ item, originalIndex }) => {
                     const src = mediaUrls[item.id]
                     const isSelected = selectedItemId === item.id
-                    const isCurrent = currentIndex === index
+                    const isCurrent = currentIndex === originalIndex
 
                     return (
                         <div
                             key={item.id}
-                            className={`playlist-row${isSelected ? ' playlist-row--selected' : ''}${dropTargetIndex === index ? ' playlist-row--drop-target' : ''
-                                }`}
+                            className={`playlist-item${isSelected ? ' playlist-item--selected' : ''}${isCurrent ? ' playlist-item--current' : ''}${dropTargetIndex === originalIndex ? ' playlist-item--drop-target' : ''}`}
                             onClick={() => onSelect(item.id)}
-                            onDragLeave={() => setDropTargetIndex((current) => (current === index ? null : current))}
-                            onDragOver={(event) => handleDragOver(event, index)}
-                            onDrop={(event) => handleDrop(event, index)}
+                            onDragLeave={() => setDropTargetIndex((current) => (current === originalIndex ? null : current))}
+                            onDragOver={(event) => handleDragOver(event, originalIndex)}
+                            onDrop={(event) => handleDrop(event, originalIndex)}
                             onKeyDown={(event) => handleRowKeyDown(event, item.id)}
-                            role="button"
+                            role="listitem"
                             tabIndex={0}
                         >
                             <button
-                                className="drag-handle"
+                                className="playlist-item__drag"
                                 draggable
                                 onClick={(event) => event.stopPropagation()}
                                 onDragEnd={() => {
                                     setDraggedIndex(null)
                                     setDropTargetIndex(null)
                                 }}
-                                onDragStart={(event) => handleDragStart(event, index)}
+                                onDragStart={(event) => handleDragStart(event, originalIndex)}
                                 type="button"
                             >
                                 <span className="sr-only">Reordenar</span>
                                 <Icon icon={MoveIcon} size={16} />
                             </button>
 
-                            <div className="playlist-row__index">{index + 1}.</div>
-
-                            <div className="playlist-row__thumb">
+                            <div className="playlist-item__thumb">
                                 <MediaThumbnail item={item} src={src} />
                             </div>
 
-                            <div className="playlist-row__main">
-                                <div className="playlist-row__title">
+                            <div className="playlist-item__content">
+                                <div className="playlist-item__title-row">
+                                    <span className="playlist-item__index">#{originalIndex + 1}</span>
                                     <strong>{item.name}</strong>
-                                    {isCurrent ? <span className="current-badge">Actual</span> : null}
+                                    {isCurrent ? <span className="playlist-badge playlist-badge--live">Playing</span> : null}
                                 </div>
 
-                                <div className="playlist-row__meta">
+                                <div className="playlist-item__meta">
+                                    <span className="playlist-badge">{item.type === 'image' ? 'Imagen' : 'Video'}</span>
+                                    <span>{formatDuration(getDisplayDurationSeconds(item, imageDurationSeconds))}</span>
+                                    <span>{formatBytes(item.size)}</span>
                                     <span>{item.mimeType}</span>
                                 </div>
                             </div>
 
-                            <div className="playlist-row__type type-pill">
-                                {item.type === 'image' ? 'Imagen' : 'Video'}
-                            </div>
-
-                            <div className="playlist-row__duration playlist-row__meta">
-                                <span>{formatDuration(getDisplayDurationSeconds(item, imageDurationSeconds))}</span>
-                            </div>
-
-                            <div className="playlist-row__actions">
+                            <div className="playlist-item__actions">
                                 <button
-                                    className="row-action"
+                                    className="icon-button"
                                     onClick={(event) => {
                                         event.stopPropagation()
-                                        onPlayIndex(index)
+                                        onPlayIndex(originalIndex)
                                     }}
                                     title="Reproducir desde este item"
                                     type="button"
@@ -184,7 +178,7 @@ export function PlaylistTable({
                                 </button>
 
                                 <button
-                                    className="row-action row-action--danger"
+                                    className="icon-button icon-button--danger"
                                     onClick={(event) => {
                                         event.stopPropagation()
                                         onRemove(item.id)
@@ -200,7 +194,7 @@ export function PlaylistTable({
                 })}
             </div>
 
-            {draggedIndex !== null ? <p className="utility-note">Reordenando elemento {draggedIndex + 1}.</p> : null}
+            {draggedIndex !== null ? <p className="utility-note">Reordenando elemento #{draggedIndex + 1}.</p> : null}
         </div>
     )
 }

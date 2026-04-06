@@ -1,24 +1,30 @@
 :root {
-  --bg: #090b0f;
-  --bg-elevated: #0d1116;
-  --surface: #11161d;
-  --surface-2: #151b23;
-  --surface-3: #1a212b;
-  --surface-4: #202936;
-  --line: rgba(255, 255, 255, 0.08);
-  --line-strong: rgba(255, 255, 255, 0.14);
-  --text: #edf2f7;
-  --text-muted: #9da8b8;
-  --text-dim: #718095;
-  --accent: #7fb0ff;
-  --accent-strong: #5c91e8;
-  --accent-soft: rgba(127, 176, 255, 0.14);
-  --danger: #ef6c6c;
-  --success: #67b784;
-  --shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --font-sans: 'IBM Plex Sans', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  --bg: #0a0d12;
+  --bg-shell: #0e1117;
+  --surface: #12161d;
+  --surface-2: #151a22;
+  --surface-3: #1a2029;
+  --surface-4: #202733;
+  --surface-5: #262d3a;
+  --line: rgba(255, 255, 255, 0.06);
+  --line-strong: rgba(255, 255, 255, 0.1);
+  --text: #f5f7fa;
+  --text-muted: #b7c0cc;
+  --text-dim: #7f8a99;
+  --accent: #d7f56b;
+  --accent-strong: #c7ef42;
+  --accent-soft: rgba(215, 245, 107, 0.14);
+  --accent-purple: #8b7cff;
+  --accent-purple-soft: rgba(139, 124, 255, 0.16);
+  --danger: #ff7b7b;
+  --warning: #ffcc66;
+  --success: #32d17c;
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+  --shadow-panel: 0 14px 34px rgba(0, 0, 0, 0.22);
+  --radius-sm: 12px;
+  --radius-md: 16px;
+  --radius-lg: 20px;
+  --font-sans: 'Outfit', 'Inter', 'SF Pro Display', 'Segoe UI', sans-serif;
   --font-mono: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
 
   font-family: var(--font-sans);
@@ -51,7 +57,8 @@ body {
   min-width: 320px;
   color: var(--text);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 22%),
+    radial-gradient(circle at top left, rgba(215, 245, 107, 0.05), transparent 28%),
+    radial-gradient(circle at 88% 18%, rgba(139, 124, 255, 0.06), transparent 20%),
     var(--bg);
 }
 
@@ -105,10 +112,10 @@ input:focus-visible,
 select:focus-visible,
 button:focus-visible,
 a:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid rgba(215, 245, 107, 0.45);
   outline-offset: 2px;
 }
 
 ::selection {
-  background: rgba(127, 176, 255, 0.28);
+  background: rgba(215, 245, 107, 0.26);
 }

@@ -20,7 +20,13 @@ export function usePlayerManifest(screenId?: string | null, pollIntervalMs = DEF
                     return
                 }
 
-                setManifest(nextManifest)
+                setManifest((currentManifest) => {
+                    if (currentManifest?.version === nextManifest.version) {
+                        return currentManifest
+                    }
+
+                    return nextManifest
+                })
                 setErrorMessage(null)
             } catch (error) {
                 if (isDisposed) {

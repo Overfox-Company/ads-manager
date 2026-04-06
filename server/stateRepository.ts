@@ -1,7 +1,9 @@
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import type { MediaItem, Orientation, PlaybackStatus } from '../src/types/media'
-import type { PlayerIssueReason, SharedPlaybackState } from '../src/types/network'
+import { ensureMediaItemVariants } from '../src/lib/media'
+import { DEFAULT_PLAYBACK_PROFILE } from '../src/lib/playbackProfiles'
+import type { MediaItem, MediaVariant, Orientation, PlaybackProfileId, PlaybackStatus } from '../src/types/media'
+import type { PlaybackTelemetryReport, PlayerIssueReason, SharedPlaybackState } from '../src/types/network'
 
 const DEFAULT_IMAGE_DURATION_SECONDS = 10
 const MIN_IMAGE_DURATION_SECONDS = 3
@@ -31,6 +33,16 @@ function isPlaybackStatus(value: unknown): value is PlaybackStatus {
     return value === 'playing' || value === 'paused' || value === 'stopped'
 }
 
+function isPlaybackProfile(value: unknown): value is PlaybackProfileId {
+    return (
+        value === 'compatibility' ||
+        value === 'balanced' ||
+        value === 'modern-efficiency' ||
+        value === 'modern-quality' ||
+        value === 'av1-experimental'
+    )
+}
+
 function isOrientation(value: unknown): value is Orientation {
     return (
         value === 'horizontal' ||
@@ -40,29 +52,125 @@ function isOrientation(value: unknown): value is Orientation {
     )
 }
 
+function sanitizeVariant(variant: unknown): MediaVariant | null {
+    if (!variant || typeof variant !== 'object') {
+        return null
+    }
+
+    const candidate = variant as Record<string, unknown>
+
+    if (
+        typeof candidate.id !== 'string' ||
+        typeof candidate.storageId !== 'string' ||
+        typeof candidate.label !== 'string' ||
+        !Array.isArray(candidate.supportedProfiles) ||
+        !isPlaybackProfile(candidate.profile) ||
+        typeof candidate.mimeType !== 'string' ||
+        typeof candidate.isMaster !== 'boolean'
+    ) {
+        return null
+    }
+
+    const supportedProfiles = candidate.supportedProfiles.filter((profile): profile is PlaybackProfileId =>
+        isPlaybackProfile(profile),
+    )
+
+    return {
+        id: candidate.id,
+        storageId: candidate.storageId,
+        label: candidate.label,
+        profile: candidate.profile,
+        supportedProfiles: supportedProfiles.length > 0 ? supportedProfiles : [candidate.profile],
+        container: candidate.container === 'mp4' || candidate.container === 'webm' ? candidate.container : 'unknown',
+        videoCodec: candidate.videoCodec === 'h264' || candidate.videoCodec === 'hevc' || candidate.videoCodec === 'av1'
+            ? candidate.videoCodec
+            : 'unknown',
+        audioCodec: candidate.audioCodec === 'aac' || candidate.audioCodec === 'opus' ? candidate.audioCodec : 'unknown',
+        width: typeof candidate.width === 'number' ? candidate.width : null,
+        height: typeof candidate.height === 'number' ? candidate.height : null,
+        fps: typeof candidate.fps === 'number' ? candidate.fps : null,
+        bitrateKbps: typeof candidate.bitrateKbps === 'number' ? candidate.bitrateKbps : null,
+        mimeType: candidate.mimeType,
+        isMaster: candidate.isMaster,
+    }
+}
+
 function sanitizePlaylist(playlist: unknown): MediaItem[] {
     if (!Array.isArray(playlist)) {
         return []
     }
 
-    return playlist.filter((item): item is MediaItem => {
+    return playlist.flatMap((item) => {
         if (!item || typeof item !== 'object') {
-            return false
+            return []
         }
 
         const candidate = item as Record<string, unknown>
 
-        return (
-            typeof candidate.id === 'string' &&
-            typeof candidate.name === 'string' &&
-            (candidate.type === 'image' || candidate.type === 'video') &&
-            typeof candidate.mimeType === 'string' &&
-            typeof candidate.size === 'number' &&
-            typeof candidate.createdAt === 'number' &&
-            (candidate.durationOverrideSeconds === null || typeof candidate.durationOverrideSeconds === 'number') &&
-            (candidate.naturalDurationSeconds === null || typeof candidate.naturalDurationSeconds === 'number')
-        )
+        if (
+            typeof candidate.id !== 'string' ||
+            typeof candidate.name !== 'string' ||
+            (candidate.type !== 'image' && candidate.type !== 'video') ||
+            typeof candidate.mimeType !== 'string' ||
+            typeof candidate.size !== 'number' ||
+            typeof candidate.createdAt !== 'number' ||
+            (candidate.durationOverrideSeconds !== null && typeof candidate.durationOverrideSeconds !== 'number') ||
+            (candidate.naturalDurationSeconds !== null && typeof candidate.naturalDurationSeconds !== 'number')
+        ) {
+            return []
+        }
+
+        const variants = Array.isArray(candidate.variants)
+            ? candidate.variants.map((variant) => sanitizeVariant(variant)).filter((variant): variant is MediaVariant => Boolean(variant))
+            : []
+
+        return [ensureMediaItemVariants({
+            id: candidate.id,
+            storageId: typeof candidate.storageId === 'string' ? candidate.storageId : candidate.id,
+            name: candidate.name,
+            type: candidate.type,
+            mimeType: candidate.mimeType,
+            size: candidate.size,
+            createdAt: candidate.createdAt,
+            durationOverrideSeconds: candidate.durationOverrideSeconds ?? null,
+            naturalDurationSeconds: candidate.naturalDurationSeconds ?? null,
+            variants,
+        })]
     })
+}
+
+function sanitizePlaybackReport(input: unknown): PlaybackTelemetryReport | null {
+    if (!input || typeof input !== 'object') {
+        return null
+    }
+
+    const candidate = input as Record<string, unknown>
+
+    if (!isPlaybackProfile(candidate.requestedProfile)) {
+        return null
+    }
+
+    return {
+        screenId: typeof candidate.screenId === 'string' ? candidate.screenId : null,
+        itemId: typeof candidate.itemId === 'string' ? candidate.itemId : null,
+        requestedProfile: candidate.requestedProfile,
+        resolvedProfile: isPlaybackProfile(candidate.resolvedProfile) ? candidate.resolvedProfile : null,
+        variantId: typeof candidate.variantId === 'string' ? candidate.variantId : null,
+        variantLabel: typeof candidate.variantLabel === 'string' ? candidate.variantLabel : null,
+        videoCodec:
+            candidate.videoCodec === 'h264' || candidate.videoCodec === 'hevc' || candidate.videoCodec === 'av1'
+                ? candidate.videoCodec
+                : null,
+        audioCodec: candidate.audioCodec === 'aac' || candidate.audioCodec === 'opus' ? candidate.audioCodec : null,
+        container: candidate.container === 'mp4' || candidate.container === 'webm' ? candidate.container : null,
+        width: typeof candidate.width === 'number' ? candidate.width : null,
+        height: typeof candidate.height === 'number' ? candidate.height : null,
+        fps: typeof candidate.fps === 'number' ? candidate.fps : null,
+        bitrateKbps: typeof candidate.bitrateKbps === 'number' ? candidate.bitrateKbps : null,
+        didFallback: Boolean(candidate.didFallback),
+        reason: typeof candidate.reason === 'string' ? candidate.reason : null,
+        updatedAt: typeof candidate.updatedAt === 'number' ? candidate.updatedAt : Date.now(),
+    }
 }
 
 function normalizeState(input: Partial<SharedPlaybackState> | null | undefined): SharedPlaybackState {
@@ -83,6 +191,8 @@ function normalizeState(input: Partial<SharedPlaybackState> | null | undefined):
                 ? input.imageDurationSeconds
                 : DEFAULT_IMAGE_DURATION_SECONDS,
         ),
+        playbackProfile: isPlaybackProfile(input?.playbackProfile) ? input.playbackProfile : DEFAULT_PLAYBACK_PROFILE,
+        lastPlaybackReport: sanitizePlaybackReport(input?.lastPlaybackReport),
         lastCommandAt: typeof input?.lastCommandAt === 'number' ? input.lastCommandAt : 0,
         updatedAt: typeof input?.updatedAt === 'number' ? input.updatedAt : Date.now(),
     }
@@ -140,13 +250,29 @@ export class StateRepository {
         return this.state.playlist.find((item) => item.id === id) ?? null
     }
 
-    async appendUploads(entries: Array<{ item: MediaItem; fileBuffer: Buffer }>) {
+    findStorageOwner(storageId: string) {
+        for (const item of this.state.playlist) {
+            if (item.storageId === storageId) {
+                return item
+            }
+
+            if (item.variants.some((variant) => variant.storageId === storageId)) {
+                return item
+            }
+        }
+
+        return null
+    }
+
+    async appendUploads(entries: Array<{ item: MediaItem; files: Array<{ storageId: string; fileBuffer: Buffer }> }>) {
         if (entries.length === 0) {
             return this.state
         }
 
         for (const entry of entries) {
-            await writeFile(this.getMediaPath(entry.item.id), entry.fileBuffer)
+            for (const file of entry.files) {
+                await writeFile(this.getMediaPath(file.storageId), file.fileBuffer)
+            }
         }
 
         const playlist = [...this.state.playlist, ...entries.map((entry) => entry.item)]
@@ -175,10 +301,26 @@ export class StateRepository {
             selectedItemId: this.state.selectedItemId === id ? null : this.state.selectedItemId,
             status: nextPlaylist.length === 0 ? 'stopped' : this.state.status,
         })
+        const removedItem = this.findItem(id)
 
         this.state = stampState(nextState)
         await this.persist()
-        await rm(this.getMediaPath(id), { force: true })
+
+        const storageIds = new Set<string>()
+
+        if (removedItem) {
+            storageIds.add(removedItem.storageId)
+
+            for (const variant of removedItem.variants) {
+                storageIds.add(variant.storageId)
+            }
+        } else {
+            storageIds.add(id)
+        }
+
+        for (const storageId of storageIds) {
+            await rm(this.getMediaPath(storageId), { force: true })
+        }
 
         return this.state
     }
@@ -249,6 +391,33 @@ export class StateRepository {
             ...this.state,
             imageDurationSeconds: clampImageDuration(seconds),
         })
+        await this.persist()
+
+        return this.state
+    }
+
+    async setPlaybackProfile(playbackProfile: PlaybackProfileId) {
+        this.state = stampState({
+            ...this.state,
+            playbackProfile,
+        })
+        await this.persist()
+
+        return this.state
+    }
+
+    async setPlaybackReport(report: PlaybackTelemetryReport, expectedVersion?: number | null) {
+        if (typeof expectedVersion === 'number' && expectedVersion !== this.state.updatedAt) {
+            return this.state
+        }
+
+        this.state = {
+            ...this.state,
+            lastPlaybackReport: {
+                ...report,
+                updatedAt: Date.now(),
+            },
+        }
         await this.persist()
 
         return this.state
