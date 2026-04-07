@@ -1,9 +1,13 @@
-import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { ensureMediaItemVariants } from '../src/lib/media'
-import { DEFAULT_PLAYBACK_PROFILE } from '../src/lib/playbackProfiles'
+import {
+    getPrimaryProfileForVariant,
+    inferSupportedProfiles,
+} from '../src/lib/playbackProfiles'
 import type { MediaItem, MediaVariant, Orientation, PlaybackProfileId, PlaybackStatus } from '../src/types/media'
 import type { PlaybackTelemetryReport, PlayerIssueReason, SharedPlaybackState } from '../src/types/network'
+import { resolveStorageRelativePath } from './mediaStorage'
 
 const DEFAULT_IMAGE_DURATION_SECONDS = 10
 const MIN_IMAGE_DURATION_SECONDS = 3
@@ -37,6 +41,7 @@ function isPlaybackProfile(value: unknown): value is PlaybackProfileId {
     return (
         value === 'compatibility' ||
         value === 'balanced' ||
+        value === 'native' ||
         value === 'modern-efficiency' ||
         value === 'modern-quality' ||
         value === 'av1-experimental'
@@ -74,21 +79,28 @@ function sanitizeVariant(variant: unknown): MediaVariant | null {
     const supportedProfiles = candidate.supportedProfiles.filter((profile): profile is PlaybackProfileId =>
         isPlaybackProfile(profile),
     )
+    const videoCodec = candidate.videoCodec === 'h264' || candidate.videoCodec === 'hevc' || candidate.videoCodec === 'av1'
+        ? candidate.videoCodec
+        : 'unknown'
+    const fps = typeof candidate.fps === 'number' ? candidate.fps : null
+    const width = typeof candidate.width === 'number' ? candidate.width : null
+    const normalizedSupportedProfiles = supportedProfiles.length > 0
+        ? inferSupportedProfiles(candidate.profile, videoCodec, width, fps)
+        : inferSupportedProfiles(null, videoCodec, width, fps)
+    const normalizedProfile = getPrimaryProfileForVariant(normalizedSupportedProfiles)
 
     return {
         id: candidate.id,
         storageId: candidate.storageId,
         label: candidate.label,
-        profile: candidate.profile,
-        supportedProfiles: supportedProfiles.length > 0 ? supportedProfiles : [candidate.profile],
+        profile: normalizedProfile,
+        supportedProfiles: normalizedSupportedProfiles,
         container: candidate.container === 'mp4' || candidate.container === 'webm' ? candidate.container : 'unknown',
-        videoCodec: candidate.videoCodec === 'h264' || candidate.videoCodec === 'hevc' || candidate.videoCodec === 'av1'
-            ? candidate.videoCodec
-            : 'unknown',
+        videoCodec,
         audioCodec: candidate.audioCodec === 'aac' || candidate.audioCodec === 'opus' ? candidate.audioCodec : 'unknown',
-        width: typeof candidate.width === 'number' ? candidate.width : null,
+        width,
         height: typeof candidate.height === 'number' ? candidate.height : null,
-        fps: typeof candidate.fps === 'number' ? candidate.fps : null,
+        fps,
         bitrateKbps: typeof candidate.bitrateKbps === 'number' ? candidate.bitrateKbps : null,
         mimeType: candidate.mimeType,
         isMaster: candidate.isMaster,
@@ -191,7 +203,8 @@ function normalizeState(input: Partial<SharedPlaybackState> | null | undefined):
                 ? input.imageDurationSeconds
                 : DEFAULT_IMAGE_DURATION_SECONDS,
         ),
-        playbackProfile: isPlaybackProfile(input?.playbackProfile) ? input.playbackProfile : DEFAULT_PLAYBACK_PROFILE,
+        playbackProfile: 'native',
+        generateVariantsOnUpload: false,
         lastPlaybackReport: sanitizePlaybackReport(input?.lastPlaybackReport),
         lastCommandAt: typeof input?.lastCommandAt === 'number' ? input.lastCommandAt : 0,
         updatedAt: typeof input?.updatedAt === 'number' ? input.updatedAt : Date.now(),
@@ -243,7 +256,7 @@ export class StateRepository {
     }
 
     getMediaPath(id: string) {
-        return path.join(mediaDirectory, id)
+        return path.join(mediaDirectory, resolveStorageRelativePath(id))
     }
 
     findItem(id: string) {
@@ -264,14 +277,23 @@ export class StateRepository {
         return null
     }
 
-    async appendUploads(entries: Array<{ item: MediaItem; files: Array<{ storageId: string; fileBuffer: Buffer }> }>) {
+    async appendUploads(entries: Array<{ item: MediaItem; files: Array<{ storageId: string; fileBuffer?: Buffer; filePath?: string }> }>) {
         if (entries.length === 0) {
             return this.state
         }
 
         for (const entry of entries) {
             for (const file of entry.files) {
-                await writeFile(this.getMediaPath(file.storageId), file.fileBuffer)
+                await mkdir(path.dirname(this.getMediaPath(file.storageId)), { recursive: true })
+
+                if (file.filePath) {
+                    await copyFile(file.filePath, this.getMediaPath(file.storageId))
+                    continue
+                }
+
+                if (file.fileBuffer) {
+                    await writeFile(this.getMediaPath(file.storageId), file.fileBuffer)
+                }
             }
         }
 
@@ -320,6 +342,10 @@ export class StateRepository {
 
         for (const storageId of storageIds) {
             await rm(this.getMediaPath(storageId), { force: true })
+        }
+
+        if (removedItem) {
+            await rm(path.join(mediaDirectory, removedItem.id), { recursive: true, force: true })
         }
 
         return this.state
@@ -396,10 +422,20 @@ export class StateRepository {
         return this.state
     }
 
-    async setPlaybackProfile(playbackProfile: PlaybackProfileId) {
+    async setPlaybackProfile(_playbackProfile: PlaybackProfileId) {
         this.state = stampState({
             ...this.state,
-            playbackProfile,
+            playbackProfile: 'native',
+        })
+        await this.persist()
+
+        return this.state
+    }
+
+    async setGenerateVariantsOnUpload(_enabled: boolean) {
+        this.state = stampState({
+            ...this.state,
+            generateVariantsOnUpload: false,
         })
         await this.persist()
 

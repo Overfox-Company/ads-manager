@@ -1,7 +1,6 @@
 import { useEffect, type RefObject, type SyntheticEvent } from 'react'
-import { FileImageIcon, FileVideoIcon, PlayListIcon } from '@hugeicons-pro/core-solid-standard'
-import { formatDuration, formatOrientationLabel, formatPlaybackStatus } from '../lib/format'
-import { getDisplayDurationSeconds } from '../lib/media'
+import { PlayListIcon } from '@hugeicons-pro/core-solid-standard'
+import { formatPlaybackStatus } from '../lib/format'
 import type { MediaItem, Orientation, PlaybackStatus } from '../types/media'
 import { Icon } from './Icon'
 
@@ -12,7 +11,6 @@ interface PreviewPanelProps {
     playlistLength: number
     status: PlaybackStatus
     orientation: Orientation
-    imageDurationSeconds: number
     currentVideoRef: RefObject<HTMLVideoElement | null>
     onVideoTimeUpdate: (event: SyntheticEvent<HTMLVideoElement>) => void
     onVideoLoadedMetadata: (event: SyntheticEvent<HTMLVideoElement>) => void
@@ -27,7 +25,6 @@ export function PreviewPanel({
     playlistLength,
     status,
     orientation,
-    imageDurationSeconds,
     currentVideoRef,
     onVideoTimeUpdate,
     onVideoLoadedMetadata,
@@ -56,10 +53,7 @@ export function PreviewPanel({
             <div className="panel-header stage-panel__header">
                 <div className="panel-title-group">
                     <span className="panel-eyebrow">En emision</span>
-                    <h2 className="panel-title panel-title--stage">{currentItem?.name ?? 'Esperando reproduccion'}</h2>
-                    <p className="panel-description">
-                        Monitor principal de la senal activa con foco en el contenido que se esta emitiendo.
-                    </p>
+
                 </div>
 
                 <div className="stage-panel__meta">
@@ -98,7 +92,7 @@ export function PreviewPanel({
                     )}
                 </div>
             </div>
-
+            {/*
             <div className="stage-facts">
                 <div className="stage-fact">
                     <span className="stage-fact__label">Tipo</span>
@@ -130,7 +124,7 @@ export function PreviewPanel({
                     <span className="stage-fact__label">Estado</span>
                     <span className="stage-fact__value">{formatPlaybackStatus(status)}</span>
                 </div>
-            </div>
+            </div>*/}
         </section>
     )
 }

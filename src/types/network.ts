@@ -37,6 +37,7 @@ export interface SharedPlaybackState {
     orientation: Orientation
     imageDurationSeconds: number
     playbackProfile: PlaybackProfileId
+    generateVariantsOnUpload: boolean
     lastPlaybackReport: PlaybackTelemetryReport | null
     lastCommandAt: number
     updatedAt: number
@@ -136,6 +137,10 @@ export interface OrientationRequest {
 
 export interface ImageDurationRequest {
     seconds: number
+}
+
+export interface GenerateVariantsOnUploadRequest {
+    enabled: boolean
 }
 
 export interface DurationOverrideRequest {

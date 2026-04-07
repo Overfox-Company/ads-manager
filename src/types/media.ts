@@ -5,6 +5,7 @@ export type PlaybackStatus = 'playing' | 'paused' | 'stopped'
 export type PlaybackProfileId =
     | 'compatibility'
     | 'balanced'
+    | 'native'
     | 'modern-efficiency'
     | 'modern-quality'
     | 'av1-experimental'

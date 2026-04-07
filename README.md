@@ -52,7 +52,7 @@ El perfil recomendado y soportado como base del sistema para carteleria es:
 
 No se asume como formato base `AV1`, `VP9`, `HEVC/H.265` ni streaming adaptativo complejo.
 
-El flujo actual valida y avisa cuando un video no llega como `video/mp4`. No se hace transcodificacion automatica en esta base, asi que la normalizacion recomendada debe ocurrir antes del upload o en un proceso de ingesta backend futuro.
+El flujo actual valida y avisa cuando un video no llega como `video/mp4`. Si subes un solo video sin sufijo de perfil, el backend ahora genera automaticamente variantes derivadas usando `ffmpeg` para cubrir compatibilidad y calidad moderna. Si subes variantes manuales con sufijos de perfil, se respetan tal como llegan.
 
 ## Perfiles de reproduccion y variantes
 
@@ -77,9 +77,7 @@ Cada video puede declarar variantes con codec, contenedor, resolucion, bitrate y
 
 ### Ruta minima viable actual
 
-En este repo no hay `ffmpeg` integrado ni disponible por defecto, asi que la generacion automatica de variantes queda preparada arquitectonicamente pero no se ejecuta sola.
-
-La forma minima de cargar variantes reales hoy es subir archivos ya derivados con sufijos de perfil en el nombre, por ejemplo:
+La forma mas controlada de cargar variantes reales sigue siendo subir archivos ya derivados con sufijos de perfil en el nombre, por ejemplo:
 
 - `promo__compat.mp4`
 - `promo__balanced.mp4`
@@ -89,20 +87,18 @@ La forma minima de cargar variantes reales hoy es subir archivos ya derivados co
 
 Si varios archivos comparten el mismo nombre base y cambian solo el sufijo, el backend los agrupa como un solo asset de playlist con multiples variantes.
 
-Si subes solo un archivo, el sistema lo registra como una variante unica y resuelve el fallback hacia el perfil seguro mas cercano cuando no exista una derivada mas moderna.
+Si subes solo un archivo de video sin sufijo de perfil, el sistema intenta generar automaticamente:
 
-### Pipeline ideal pendiente
+- `compatibility` en H.264 / AAC
+- `balanced` en H.264 / AAC
+- `modern-efficiency` en HEVC / AAC cuando el master lo justifica
+- `modern-quality` en HEVC / AAC cuando el master lo justifica
 
-La arquitectura ya queda lista para que, cuando exista `ffmpeg` en el host, la ingesta haga esto:
+`AV1 experimental` sigue siendo manual para no disparar tiempos de ingesta y CPU de forma irrealista.
 
-1. guardar el master original
-2. generar `compat_h264`
-3. generar `balanced_h264`
-4. generar `modern_hevc`
-5. opcionalmente `premium_hevc` y `av1_experimental`
-6. registrar metadata tecnica y poster
+### Pipeline actual
 
-Ese paso no se fuerza en esta base para no fingir una capacidad que hoy no existe en el entorno.
+La ingesta ya puede derivar perfiles automaticamente desde un master unico usando `ffmpeg-static` y `ffprobe-static` empaquetados en el proyecto. El proceso prioriza una salida pragmatica para LAN signage y no intenta cubrir cada combinacion exotica de codec, HDR, alpha, audio multicanal o mastering profesional.
 
 ## Arquitectura de reproduccion TV
 

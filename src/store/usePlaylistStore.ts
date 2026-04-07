@@ -2,7 +2,6 @@ import { create } from 'zustand'
 import { getMediaBlob, saveMediaBlob } from '../lib/indexedDb'
 import { getMediaContentUrl } from '../lib/serverApi'
 import { DEFAULT_IMAGE_DURATION_SECONDS, ensureMediaItemVariants, getPreviewStorageId } from '../lib/media'
-import { DEFAULT_PLAYBACK_PROFILE } from '../lib/playbackProfiles'
 import type { MediaItem, Orientation, PlaybackProfileId, PlaybackStatus } from '../types/media'
 import type { PlaybackTelemetryReport, SharedPlaybackState } from '../types/network'
 
@@ -15,6 +14,7 @@ type PlaylistStore = {
     orientation: Orientation
     imageDurationSeconds: number
     playbackProfile: PlaybackProfileId
+    generateVariantsOnUpload: boolean
     lastPlaybackReport: PlaybackTelemetryReport | null
     lastCommandAt: number
     updatedAt: number
@@ -105,7 +105,8 @@ export const usePlaylistStore = create<PlaylistStore>()(
         status: 'stopped',
         orientation: 'horizontal',
         imageDurationSeconds: DEFAULT_IMAGE_DURATION_SECONDS,
-        playbackProfile: DEFAULT_PLAYBACK_PROFILE,
+        playbackProfile: 'native',
+        generateVariantsOnUpload: false,
         lastPlaybackReport: null,
         lastCommandAt: 0,
         updatedAt: 0,
@@ -134,7 +135,8 @@ export const usePlaylistStore = create<PlaylistStore>()(
                     status: normalizedPlaylist.length === 0 ? 'stopped' : remoteState.status,
                     orientation: remoteState.orientation,
                     imageDurationSeconds: clampImageDuration(remoteState.imageDurationSeconds),
-                    playbackProfile: remoteState.playbackProfile,
+                    playbackProfile: 'native',
+                    generateVariantsOnUpload: false,
                     lastPlaybackReport: remoteState.lastPlaybackReport,
                     lastCommandAt: remoteState.lastCommandAt,
                     updatedAt: remoteState.updatedAt,

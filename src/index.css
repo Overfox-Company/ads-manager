@@ -1,11 +1,15 @@
+@import "tailwindcss";
+
 :root {
-  --bg: #0a0d12;
-  --bg-shell: #0e1117;
-  --surface: #12161d;
+  --bg: #000000;
+  --bg-shell: #d3ff25;
+  --surface: #111111;
   --surface-2: #151a22;
   --surface-3: #1a2029;
   --surface-4: #202733;
   --surface-5: #262d3a;
+  --card: #171c24;
+  --card-strong: #1d2430;
   --line: rgba(255, 255, 255, 0.06);
   --line-strong: rgba(255, 255, 255, 0.1);
   --text: #f5f7fa;

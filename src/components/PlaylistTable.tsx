@@ -6,7 +6,7 @@ import {
     MoveIcon,
     PlayIcon,
 } from '@hugeicons-pro/core-solid-standard'
-import { formatBytes, formatDuration } from '../lib/format'
+import { formatDuration } from '../lib/format'
 import { getDisplayDurationSeconds } from '../lib/media'
 import type { MediaItem } from '../types/media'
 import { Icon } from './Icon'
@@ -133,6 +133,7 @@ export function PlaylistTable({
                             <button
                                 className="playlist-item__drag"
                                 draggable
+                                style={{ display: 'flex', alignItems: 'center', gap: '4px' }}
                                 onClick={(event) => event.stopPropagation()}
                                 onDragEnd={() => {
                                     setDraggedIndex(null)
@@ -143,6 +144,7 @@ export function PlaylistTable({
                             >
                                 <span className="sr-only">Reordenar</span>
                                 <Icon icon={MoveIcon} size={16} />
+                                { /* <span className="playlist-item__index">#{originalIndex + 1}</span> */}
                             </button>
 
                             <div className="playlist-item__thumb">
@@ -151,44 +153,54 @@ export function PlaylistTable({
 
                             <div className="playlist-item__content">
                                 <div className="playlist-item__title-row">
-                                    <span className="playlist-item__index">#{originalIndex + 1}</span>
+
                                     <strong>{item.name}</strong>
-                                    {isCurrent ? <span className="playlist-badge playlist-badge--live">Playing</span> : null}
                                 </div>
 
                                 <div className="playlist-item__meta">
-                                    <span className="playlist-badge">{item.type === 'image' ? 'Imagen' : 'Video'}</span>
+
+
+
+                                    {                                /*    <span className="playlist-badge">{item.type === 'image' ? 'Imagen' : 'Video'}</span>*/}
+
+                                    { /* <span>{formatBytes(item.size)}</span> */}
                                     <span>{formatDuration(getDisplayDurationSeconds(item, imageDurationSeconds))}</span>
-                                    <span>{formatBytes(item.size)}</span>
-                                    <span>{item.mimeType}</span>
+
+
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px', }}>
+                                        <button
+
+                                            className="icon-button"
+                                            onClick={(event) => {
+                                                event.stopPropagation()
+                                                onPlayIndex(originalIndex)
+                                            }}
+                                            title="Reproducir desde este item"
+                                            type="button"
+                                        >
+                                            <Icon icon={PlayIcon} size={16} />
+                                        </button>
+
+                                        <button
+                                            className="icon-button icon-button--danger"
+                                            onClick={(event) => {
+                                                event.stopPropagation()
+                                                onRemove(item.id)
+                                            }}
+                                            title="Eliminar item"
+                                            type="button"
+                                        >
+                                            <Icon icon={FileRemoveIcon} size={16} />
+                                        </button>
+                                    </div>
+
+
+                                    {  /*     <span>{item.mimeType}</span> */}
                                 </div>
+
+
                             </div>
 
-                            <div className="playlist-item__actions">
-                                <button
-                                    className="icon-button"
-                                    onClick={(event) => {
-                                        event.stopPropagation()
-                                        onPlayIndex(originalIndex)
-                                    }}
-                                    title="Reproducir desde este item"
-                                    type="button"
-                                >
-                                    <Icon icon={PlayIcon} size={16} />
-                                </button>
-
-                                <button
-                                    className="icon-button icon-button--danger"
-                                    onClick={(event) => {
-                                        event.stopPropagation()
-                                        onRemove(item.id)
-                                    }}
-                                    title="Eliminar item"
-                                    type="button"
-                                >
-                                    <Icon icon={FileRemoveIcon} size={16} />
-                                </button>
-                            </div>
                         </div>
                     )
                 })}

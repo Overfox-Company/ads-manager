@@ -11,17 +11,15 @@ import {
     reorderPlaylist,
     selectPlaylistItem,
     sendPlaybackAction,
-    setCurrentPlaylistIndex,
     updateImageDuration,
     updateItemDurationOverride,
     updateOrientation,
-    updatePlaybackProfile,
     uploadMediaFiles,
 } from '../lib/serverApi'
 import { getMediaCompatibilityWarnings } from '../lib/mediaPolicy'
 import { createUploadMediaDescriptorFromFile, getDisplayDurationSeconds } from '../lib/media'
 import { usePlaylistStore } from '../store/usePlaylistStore'
-import type { Orientation, PlaybackProfileId, UploadMediaDescriptor } from '../types/media'
+import type { Orientation, UploadMediaDescriptor } from '../types/media'
 
 function clampValue(value: number, min: number, max: number) {
     return Math.min(Math.max(value, min), max)
@@ -61,6 +59,11 @@ export function AdminPage() {
     const [selectedFiles, setSelectedFiles] = useState<string[]>([])
     const [uploadErrorMessage, setUploadErrorMessage] = useState<string | null>(null)
     const [uploadWarningMessages, setUploadWarningMessages] = useState<string[]>([])
+    const [uploadStatus, setUploadStatus] = useState<{
+        phase: 'idle' | 'preparing' | 'uploading' | 'processing' | 'complete'
+        progress: { loaded: number; total: number; percent: number } | null
+        detail: string | null
+    }>({ phase: 'idle', progress: null, detail: null })
     const [libraryFilter, setLibraryFilter] = useState<'all' | 'video' | 'image'>('all')
     const [monitorVolume, setMonitorVolume] = useState(72)
     const [monitorMuted, setMonitorMuted] = useState(false)
@@ -76,15 +79,12 @@ export function AdminPage() {
     const status = usePlaylistStore((state) => state.status)
     const orientation = usePlaylistStore((state) => state.orientation)
     const imageDurationSeconds = usePlaylistStore((state) => state.imageDurationSeconds)
-    const playbackProfile = usePlaylistStore((state) => state.playbackProfile)
-    const lastPlaybackReport = usePlaylistStore((state) => state.lastPlaybackReport)
     const lastCommandAt = usePlaylistStore((state) => state.lastCommandAt)
     const updatedAt = usePlaylistStore((state) => state.updatedAt)
 
     const selectedIndex = playlist.findIndex((item) => item.id === selectedItemId)
     const selectedItem = selectedIndex >= 0 ? playlist[selectedIndex] : null
     const currentItem = playlist[currentIndex] ?? null
-    const selectedUrl = selectedItem ? mediaUrls[selectedItem.id] ?? null : null
     const currentUrl = currentItem ? mediaUrls[currentItem.id] ?? null : null
     const currentItemDurationSeconds = currentItem
         ? getDisplayDurationSeconds(currentItem, imageDurationSeconds) ?? 0
@@ -151,11 +151,22 @@ export function AdminPage() {
         setSelectedFiles(files.map((file) => file.name))
         setUploadErrorMessage(null)
         setUploadWarningMessages([])
+        setUploadStatus({
+            phase: 'preparing',
+            progress: null,
+            detail: 'Analizando archivos antes de enviarlos al servidor.',
+        })
 
         try {
             const uploads: Array<{ file: File; item: UploadMediaDescriptor }> = []
 
-            for (const file of files) {
+            for (const [index, file] of files.entries()) {
+                setUploadStatus({
+                    phase: 'preparing',
+                    progress: null,
+                    detail: `Preparando ${index + 1} de ${files.length}: ${file.name}`,
+                })
+
                 const id = createUploadId()
                 const createdAt = Date.now()
                 const item = await createUploadMediaDescriptorFromFile(file, id, createdAt)
@@ -181,12 +192,33 @@ export function AdminPage() {
             const uploadResult = await uploadMediaFiles(
                 uploads.map((entry) => entry.file),
                 uploads.map((entry) => entry.item),
+                {
+                    onUploadProgress: (progress) => {
+                        setUploadStatus({
+                            phase: 'uploading',
+                            progress,
+                            detail: `Enviando ${uploads.length} archivo${uploads.length === 1 ? '' : 's'} al servidor.`,
+                        })
+                    },
+                    onUploadTransferComplete: () => {
+                        setUploadStatus((current) => ({
+                            phase: 'processing',
+                            progress: current.progress ?? { loaded: 0, total: 0, percent: 100 },
+                            detail: 'Subida completada. El servidor esta guardando la version nativa.',
+                        }))
+                    },
+                },
             )
 
             setUploadWarningMessages(Array.from(new Set([
                 ...clientWarnings,
                 ...uploadResult.warnings.map((warning) => warning.message),
             ])))
+            setUploadStatus((current) => ({
+                phase: 'complete',
+                progress: current.progress,
+                detail: 'Carga finalizada. El video quedo disponible solo en nativa.',
+            }))
 
             const store = usePlaylistStore.getState()
 
@@ -195,6 +227,7 @@ export function AdminPage() {
         } catch (error) {
             console.error(error)
             setUploadErrorMessage(error instanceof Error ? error.message : 'No se pudieron cargar los archivos seleccionados.')
+            setUploadStatus({ phase: 'idle', progress: null, detail: null })
         } finally {
             setIsUploading(false)
         }
@@ -272,14 +305,6 @@ export function AdminPage() {
             })
     }
 
-    const handleSetCurrentIndex = async (index: number) => {
-        try {
-            usePlaylistStore.getState().hydrateRemoteState(await setCurrentPlaylistIndex(index))
-        } catch (error) {
-            console.error(error)
-        }
-    }
-
     const handleMonitorVolumeChange = (value: number) => {
         const nextVolume = clampValue(Math.round(value), 0, 100)
 
@@ -323,6 +348,7 @@ export function AdminPage() {
                     onFilterChange={setLibraryFilter}
                     selectedFiles={selectedFiles}
                     uploadErrorMessage={uploadErrorMessage}
+                    uploadStatus={uploadStatus}
                     uploadWarningMessages={uploadWarningMessages}
                 >
                     <PlaylistTable
@@ -381,7 +407,6 @@ export function AdminPage() {
                     currentItem={currentItem}
                     currentUrl={currentUrl}
                     currentVideoRef={currentVideoRef}
-                    imageDurationSeconds={imageDurationSeconds}
                     onVideoDurationChange={(event) => {
                         const nextDuration = Number.isFinite(event.currentTarget.duration)
                             ? event.currentTarget.duration
@@ -409,9 +434,6 @@ export function AdminPage() {
                 />
 
                 <InspectorPanel
-                    currentIndex={currentIndex}
-                    currentItem={currentItem}
-                    lastPlaybackReport={lastPlaybackReport}
                     imageDurationSeconds={imageDurationSeconds}
                     onChangeDurationOverride={(id, seconds) => {
                         void updateItemDurationOverride(id, seconds)
@@ -434,25 +456,8 @@ export function AdminPage() {
                     onOrientationChange={(value) => {
                         void handleOrientationChange(value)
                     }}
-                    onPlaybackProfileChange={(profile: PlaybackProfileId) => {
-                        void updatePlaybackProfile(profile)
-                            .then((state) => {
-                                usePlaylistStore.getState().hydrateRemoteState(state)
-                            })
-                            .catch((error) => {
-                                console.error(error)
-                            })
-                    }}
-                    onSetCurrentItem={(index) => {
-                        void handleSetCurrentIndex(index)
-                    }}
                     orientation={orientation}
-                    playbackProfile={playbackProfile}
-                    playlistLength={playlist.length}
-                    selectedIndex={selectedIndex}
                     selectedItem={selectedItem}
-                    selectedUrl={selectedUrl}
-                    status={status}
                 />
             </main>
 

@@ -105,6 +105,10 @@ function buildFallbackReason(
         return `Este dispositivo no soporta HEVC de forma fiable. Se uso ${resolved.label}.`
     }
 
+    if (resolvedProfile === 'native' && requestedProfile !== 'native') {
+        return `Este video solo tiene disponible su version nativa. Se uso ${resolved.label}.`
+    }
+
     if (requestedProfile !== resolvedProfile) {
         return `El perfil ${requested.shortLabel.toLowerCase()} no estaba disponible para este contenido. Se uso ${resolved.label}.`
     }
@@ -177,11 +181,13 @@ export function resolvePlaybackVariant(
                     variant,
                     supportRank,
                     exactProfileMatch: variant.profile === fallbackProfile ? 1 : 0,
+                    derivedRank: variant.isMaster ? 0 : 1,
                 }
             })
             .sort((left, right) =>
                 right.supportRank - left.supportRank ||
                 right.exactProfileMatch - left.exactProfileMatch ||
+                right.derivedRank - left.derivedRank ||
                 (right.variant.bitrateKbps ?? 0) - (left.variant.bitrateKbps ?? 0),
             )
 

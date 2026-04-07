@@ -1,4 +1,4 @@
-import { access } from 'node:fs/promises'
+import { access, mkdir } from 'node:fs/promises'
 import path from 'node:path'
 import http from 'node:http'
 import express from 'express'
@@ -6,19 +6,12 @@ import multer from 'multer'
 import WebSocket, { WebSocketServer } from 'ws'
 import { ensureMediaItemVariants } from '../src/lib/media'
 import { getMediaCompatibilityWarnings } from '../src/lib/mediaPolicy'
-import {
-    getPlaybackProfileDefinition,
-    getPlaybackProfileFallbackChain,
-    getPrimaryProfileForVariant,
-    inferSupportedProfiles,
-} from '../src/lib/playbackProfiles'
 import type { MediaItem, MediaType, MediaVariant, Orientation, UploadMediaDescriptor } from '../src/types/media'
 import type {
     DurationOverrideRequest,
     ImageDurationRequest,
     OrientationRequest,
     PlaybackActionRequest,
-    PlaybackProfileRequest,
     PlayerPlaybackReportRequest,
     PlayerAdvanceRequest,
     PlayerIssueRequest,
@@ -30,10 +23,24 @@ import type {
     StateResponse,
 } from '../src/types/network'
 import { StateRepository } from './stateRepository'
+import { createNativeStorageId } from './mediaStorage'
+import { cleanupPreparedPaths } from './videoVariantPipeline'
 
 const HOST = '0.0.0.0'
 const PORT = Number(process.env.PORT ?? '8787')
-const upload = multer({ storage: multer.memoryStorage() })
+const uploadTempDirectory = path.resolve(process.cwd(), 'local-data', 'uploads-temp')
+const upload = multer({
+    storage: multer.diskStorage({
+        destination: (_request, _file, callback) => {
+            callback(null, uploadTempDirectory)
+        },
+        filename: (_request, file, callback) => {
+            const extension = path.extname(file.originalname)
+
+            callback(null, `${Date.now()}-${Math.random().toString(16).slice(2)}${extension}`)
+        },
+    }),
+})
 const repository = new StateRepository()
 
 function resolveMediaType(mimeType: string): MediaType | null {
@@ -65,39 +72,13 @@ function buildPlaylistId(items: MediaItem[]) {
     return items.length === 0 ? 'empty' : items.map((item) => item.id).join('|')
 }
 
-function selectPreviewVariant(item: MediaItem) {
-    if (item.type !== 'video') {
-        return null
-    }
-
-    for (const profile of getPlaybackProfileFallbackChain('balanced')) {
-        const variant = item.variants.find((candidate) =>
-            candidate.profile === profile || candidate.supportedProfiles.includes(profile),
-        )
-
-        if (variant) {
-            return variant
-        }
-    }
-
-    return item.variants[0] ?? null
-}
-
-function createVideoVariant(assetId: string, descriptor: UploadMediaDescriptor) {
-    const supportedProfiles = inferSupportedProfiles(
-        descriptor.variantProfileHint,
-        descriptor.videoCodecHint,
-        descriptor.width,
-    )
-    const primaryProfile = getPrimaryProfileForVariant(supportedProfiles)
-    const primaryProfileDefinition = getPlaybackProfileDefinition(primaryProfile)
-
+function createFallbackOriginalVariant(assetId: string, descriptor: UploadMediaDescriptor, storageId: string) {
     return {
-        id: `${assetId}:${descriptor.id}`,
-        storageId: descriptor.id,
-        label: primaryProfileDefinition.label,
-        profile: primaryProfile,
-        supportedProfiles,
+        id: `${assetId}:${storageId}`,
+        storageId,
+        label: 'Nativa',
+        profile: 'native',
+        supportedProfiles: ['native'],
         container: descriptor.containerHint,
         videoCodec: descriptor.videoCodecHint,
         audioCodec: descriptor.audioCodecHint,
@@ -106,32 +87,37 @@ function createVideoVariant(assetId: string, descriptor: UploadMediaDescriptor) 
         fps: descriptor.fps,
         bitrateKbps: descriptor.bitrateKbps,
         mimeType: descriptor.mimeType,
-        isMaster: descriptor.variantProfileHint === null,
+        isMaster: true,
     } satisfies MediaVariant
 }
 
-function buildUploadAssets(entries: Array<{ descriptor: UploadMediaDescriptor; fileBuffer: Buffer }>) {
-    const groupedUploads = new Map<string, Array<{ descriptor: UploadMediaDescriptor; fileBuffer: Buffer }>>()
-
-    for (const entry of entries) {
-        const groupKey = entry.descriptor.type === 'video' && entry.descriptor.variantGroupKey
-            ? entry.descriptor.variantGroupKey
-            : entry.descriptor.id
-        const existingGroup = groupedUploads.get(groupKey) ?? []
-
-        existingGroup.push(entry)
-        groupedUploads.set(groupKey, existingGroup)
+function getNativeVariants(item: MediaItem) {
+    if (item.type !== 'video') {
+        return []
     }
 
-    return Array.from(groupedUploads.values()).map((groupEntries) => {
-        const firstDescriptor = groupEntries[0]?.descriptor
+    const nativeVariants = item.variants.filter((variant) =>
+        variant.profile === 'native' || variant.supportedProfiles.includes('native'),
+    )
+
+    return nativeVariants.length > 0 ? nativeVariants : item.variants.slice(0, 1)
+}
+
+async function buildUploadAssets(entries: Array<{ descriptor: UploadMediaDescriptor; filePath: string }>) {
+    const cleanupPaths: string[] = []
+
+    const assets: Array<{ item: MediaItem; files: Array<{ storageId: string; filePath: string }> }> = []
+
+    for (const entry of entries) {
+        cleanupPaths.push(entry.filePath)
+        const firstDescriptor = entry.descriptor
 
         if (!firstDescriptor) {
             throw new Error('Grupo de uploads invalido')
         }
 
         if (firstDescriptor.type === 'image') {
-            return {
+            assets.push({
                 item: ensureMediaItemVariants({
                     id: firstDescriptor.id,
                     storageId: firstDescriptor.id,
@@ -144,46 +130,40 @@ function buildUploadAssets(entries: Array<{ descriptor: UploadMediaDescriptor; f
                     naturalDurationSeconds: null,
                     variants: [],
                 }),
-                files: [{ storageId: firstDescriptor.id, fileBuffer: groupEntries[0].fileBuffer }],
-            }
+                files: [{ storageId: firstDescriptor.id, filePath: entry.filePath }],
+            })
+
+            continue
         }
 
-        const assetId = firstDescriptor.id
-        const variants = groupEntries.map((entry) => createVideoVariant(assetId, entry.descriptor))
-        const previewVariant = variants.find((variant) =>
-            variant.supportedProfiles.includes('compatibility') || variant.profile === 'compatibility',
-        ) ?? selectPreviewVariant({
-            id: assetId,
-            storageId: firstDescriptor.id,
-            name: firstDescriptor.name,
-            type: 'video',
-            mimeType: firstDescriptor.mimeType,
-            size: firstDescriptor.size,
-            createdAt: firstDescriptor.createdAt,
-            durationOverrideSeconds: null,
-            naturalDurationSeconds: firstDescriptor.naturalDurationSeconds,
-            variants,
-        }) ?? variants[0]
+        // La generacion automatica de variantes se desactivo: todos los uploads de video
+        // conservan unicamente la version nativa para almacenamiento y reproduccion.
 
-        return {
+        const assetId = firstDescriptor.id
+        const nativeStorageId = createNativeStorageId(assetId, path.extname(entry.filePath) || '.mp4')
+        const variants = [createFallbackOriginalVariant(assetId, firstDescriptor, nativeStorageId)]
+
+        assets.push({
             item: ensureMediaItemVariants({
                 id: assetId,
-                storageId: previewVariant?.storageId ?? firstDescriptor.id,
+                storageId: nativeStorageId,
                 name: firstDescriptor.name,
                 type: 'video',
-                mimeType: previewVariant?.mimeType ?? firstDescriptor.mimeType,
-                size: groupEntries.reduce((total, entry) => total + entry.descriptor.size, 0),
-                createdAt: Math.min(...groupEntries.map((entry) => entry.descriptor.createdAt)),
+                mimeType: firstDescriptor.mimeType,
+                size: firstDescriptor.size,
+                createdAt: firstDescriptor.createdAt,
                 durationOverrideSeconds: null,
                 naturalDurationSeconds: firstDescriptor.naturalDurationSeconds,
                 variants,
             }),
-            files: groupEntries.map((entry) => ({
-                storageId: entry.descriptor.id,
-                fileBuffer: entry.fileBuffer,
-            })),
-        }
-    })
+            files: [{
+                storageId: nativeStorageId,
+                filePath: entry.filePath,
+            }],
+        })
+    }
+
+    return { assets, cleanupPaths }
 }
 
 function buildPlayerManifest(request: express.Request, state = repository.getState()) {
@@ -199,26 +179,33 @@ function buildPlayerManifest(request: express.Request, state = repository.getSta
         currentItemId: state.playlist[state.currentIndex]?.id ?? null,
         orientation: state.orientation,
         imageDurationSeconds: state.imageDurationSeconds,
-        playbackProfile: state.playbackProfile,
+        playbackProfile: 'native',
         lastPlaybackReport: state.lastPlaybackReport,
         updatedAt: state.updatedAt,
-        items: state.playlist.map((item) => ({
-            id: item.id,
-            storageId: item.storageId,
-            name: item.name,
-            type: item.type,
-            src: new URL(`/api/media/${item.storageId}/content`, `${origin}/`).toString(),
-            mime: item.mimeType,
-            duration: item.type === 'image'
-                ? item.durationOverrideSeconds ?? state.imageDurationSeconds
-                : item.naturalDurationSeconds,
-            variants: item.type === 'video'
-                ? item.variants.map((variant) => ({
-                    ...variant,
-                    src: new URL(`/api/media/${variant.storageId}/content`, `${origin}/`).toString(),
-                }))
-                : [],
-        })),
+        items: state.playlist.map((item) => {
+            const nativeVariants = getNativeVariants(item)
+            const playbackStorageId = item.type === 'video'
+                ? nativeVariants[0]?.storageId ?? item.storageId
+                : item.storageId
+
+            return {
+                id: item.id,
+                storageId: playbackStorageId,
+                name: item.name,
+                type: item.type,
+                src: new URL(`/api/media/${playbackStorageId}/content`, `${origin}/`).toString(),
+                mime: item.mimeType,
+                duration: item.type === 'image'
+                    ? item.durationOverrideSeconds ?? state.imageDurationSeconds
+                    : item.naturalDurationSeconds,
+                variants: item.type === 'video'
+                    ? nativeVariants.map((variant) => ({
+                        ...variant,
+                        src: new URL(`/api/media/${variant.storageId}/content`, `${origin}/`).toString(),
+                    }))
+                    : [],
+            }
+        }),
     } satisfies PlayerManifest
 }
 
@@ -259,6 +246,7 @@ async function maybeEnableStaticHosting(app: express.Express) {
 }
 
 async function main() {
+    await mkdir(uploadTempDirectory, { recursive: true })
     await repository.initialize()
 
     const app = express()
@@ -349,22 +337,26 @@ async function main() {
                     mimeType: file.mimetype,
                     size: file.size,
                 },
-                fileBuffer: file.buffer,
+                filePath: file.path,
             }]
         })
 
-        const uploadAssets = buildUploadAssets(entries)
+        const { assets: uploadAssets, cleanupPaths } = await buildUploadAssets(entries)
 
-        const state = await repository.appendUploads(uploadAssets)
-        const warnings = uploadAssets.flatMap(({ item }) =>
-            getMediaCompatibilityWarnings(item).map((warning) => ({
-                ...warning,
-                itemId: item.id,
-            })),
-        )
+        try {
+            const state = await repository.appendUploads(uploadAssets)
+            const warnings = uploadAssets.flatMap(({ item }) =>
+                getMediaCompatibilityWarnings(item).map((warning) => ({
+                    ...warning,
+                    itemId: item.id,
+                })),
+            )
 
-        broadcastState(websocketServer)
-        return response.json({ state, warnings } satisfies StateResponse)
+            broadcastState(websocketServer)
+            return response.json({ state, warnings } satisfies StateResponse)
+        } finally {
+            await cleanupPreparedPaths(cleanupPaths)
+        }
     })
 
     app.get('/api/media/:id/content', (request, response) => {
@@ -451,21 +443,17 @@ async function main() {
         return sendState(response, state)
     })
 
-    app.post('/api/settings/playback-profile', async (request, response) => {
-        const body = request.body as PlaybackProfileRequest
+    app.post('/api/settings/playback-profile', async (_request, response) => {
+        // Endpoint conservado por compatibilidad. La app queda bloqueada en perfil nativo.
+        const state = await repository.setPlaybackProfile('native')
 
-        if (
-            !body ||
-            (body.profile !== 'compatibility' &&
-                body.profile !== 'balanced' &&
-                body.profile !== 'modern-efficiency' &&
-                body.profile !== 'modern-quality' &&
-                body.profile !== 'av1-experimental')
-        ) {
-            return sendError(response, 400, 'profile es requerido')
-        }
+        broadcastState(websocketServer)
+        return sendState(response, state)
+    })
 
-        const state = await repository.setPlaybackProfile(body.profile)
+    app.post('/api/settings/upload-variants', async (_request, response) => {
+        // Endpoint conservado por compatibilidad. La generacion de variantes queda desactivada.
+        const state = await repository.setGenerateVariantsOnUpload(false)
 
         broadcastState(websocketServer)
         return sendState(response, state)

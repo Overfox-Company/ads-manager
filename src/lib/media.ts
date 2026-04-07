@@ -1,13 +1,12 @@
 import {
     getDisplayAssetName,
     inferFrameRateHintFromName,
-    getPrimaryProfileForVariant,
     inferAudioCodecHint,
     inferContainerHint,
     inferPlaybackProfileHintFromName,
-    inferSupportedProfiles,
     inferVideoCodecHint,
     getVariantGroupKey,
+    normalizeSelectablePlaybackProfile,
 } from './playbackProfiles'
 import type {
     MediaItem,
@@ -154,11 +153,11 @@ export function getPreviewStorageId(item: MediaItem) {
         return item.storageId
     }
 
-    const compatibilityVariant = item.variants.find((variant) =>
-        variant.supportedProfiles.includes('compatibility') || variant.profile === 'compatibility',
+    const nativeVariant = item.variants.find((variant) =>
+        variant.supportedProfiles.includes('native') || variant.profile === 'native',
     )
 
-    return compatibilityVariant?.storageId ?? item.variants[0]?.storageId ?? item.storageId
+    return nativeVariant?.storageId ?? item.storageId ?? item.variants[0]?.storageId
 }
 
 export function ensureMediaItemVariants(item: MediaItem): MediaItem {
@@ -171,14 +170,15 @@ export function ensureMediaItemVariants(item: MediaItem): MediaItem {
     }
 
     if (item.variants.length > 0) {
+        const nativeVariant = item.variants.find((variant) =>
+            variant.supportedProfiles.includes('native') || variant.profile === 'native',
+        )
+
         return {
             ...item,
-            storageId: item.storageId || item.variants[0]?.storageId || item.id,
+            storageId: nativeVariant?.storageId || item.storageId || item.variants[0]?.storageId || item.id,
         }
     }
-
-    const width = null
-    const supportedProfiles = inferSupportedProfiles(null, inferVideoCodecHint(item.name, item.mimeType), width)
 
     return {
         ...item,
@@ -186,9 +186,9 @@ export function ensureMediaItemVariants(item: MediaItem): MediaItem {
         variants: [{
             id: `${item.id}-source`,
             storageId: item.storageId || item.id,
-            label: item.name,
-            profile: getPrimaryProfileForVariant(supportedProfiles),
-            supportedProfiles,
+            label: 'Nativa',
+            profile: normalizeSelectablePlaybackProfile('native'),
+            supportedProfiles: ['native'],
             container: inferContainerHint(item.mimeType, item.name),
             videoCodec: inferVideoCodecHint(item.name, item.mimeType),
             audioCodec: inferAudioCodecHint(item.mimeType, item.name),

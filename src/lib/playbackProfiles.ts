@@ -8,13 +8,13 @@ export interface PlaybackProfileDefinition {
     technicalSummary: string
     compatibilityLabel: string
     compatibilityWarning: string | null
-    badge: 'recommended' | 'safe' | 'modern' | 'premium' | 'experimental'
+    badge: 'recommended' | 'safe' | 'native' | 'modern' | 'premium' | 'experimental'
     isDefault: boolean
 }
 
 export const DEFAULT_PLAYBACK_PROFILE: PlaybackProfileId = 'balanced'
 
-export const PLAYBACK_PROFILE_DEFINITIONS: PlaybackProfileDefinition[] = [
+export const SELECTABLE_PLAYBACK_PROFILE_DEFINITIONS: PlaybackProfileDefinition[] = [
     {
         id: 'compatibility',
         label: 'Compatibilidad maxima',
@@ -37,6 +37,21 @@ export const PLAYBACK_PROFILE_DEFINITIONS: PlaybackProfileDefinition[] = [
         badge: 'recommended',
         isDefault: true,
     },
+    {
+        id: 'native',
+        label: 'Nativa',
+        shortLabel: 'Nativa',
+        description: 'Archivo original subido. Mantiene la fuente tal como entro al sistema.',
+        technicalSummary: 'Master original · sin recodificar · depende del codec y bitrate reales del archivo.',
+        compatibilityLabel: 'Variable segun el archivo',
+        compatibilityWarning: 'Usa este perfil cuando quieras reproducir exactamente el archivo original.',
+        badge: 'native',
+        isDefault: false,
+    },
+]
+
+export const PLAYBACK_PROFILE_DEFINITIONS: PlaybackProfileDefinition[] = [
+    ...SELECTABLE_PLAYBACK_PROFILE_DEFINITIONS,
     {
         id: 'modern-efficiency',
         label: 'Eficiencia moderna',
@@ -73,11 +88,12 @@ export const PLAYBACK_PROFILE_DEFINITIONS: PlaybackProfileDefinition[] = [
 ]
 
 export const PLAYBACK_PROFILE_FALLBACKS: Record<PlaybackProfileId, PlaybackProfileId[]> = {
-    compatibility: ['compatibility'],
-    balanced: ['balanced', 'compatibility'],
-    'modern-efficiency': ['modern-efficiency', 'balanced', 'compatibility'],
-    'modern-quality': ['modern-quality', 'modern-efficiency', 'balanced', 'compatibility'],
-    'av1-experimental': ['av1-experimental', 'modern-efficiency', 'balanced', 'compatibility'],
+    compatibility: ['compatibility', 'balanced', 'native'],
+    balanced: ['balanced', 'compatibility', 'native'],
+    native: ['native'],
+    'modern-efficiency': ['balanced', 'compatibility', 'native'],
+    'modern-quality': ['balanced', 'compatibility', 'native'],
+    'av1-experimental': ['balanced', 'compatibility', 'native'],
 }
 
 const PROFILE_NAME_SUFFIXES: Array<{ pattern: RegExp; profile: PlaybackProfileId }> = [
@@ -99,6 +115,14 @@ export function getPlaybackProfileDefinition(profile: PlaybackProfileId) {
 
 export function getPlaybackProfileFallbackChain(profile: PlaybackProfileId) {
     return PLAYBACK_PROFILE_FALLBACKS[profile]
+}
+
+export function normalizeSelectablePlaybackProfile(profile: PlaybackProfileId | null | undefined): PlaybackProfileId {
+    if (profile === 'compatibility' || profile === 'balanced' || profile === 'native') {
+        return profile
+    }
+
+    return DEFAULT_PLAYBACK_PROFILE
 }
 
 export function inferPlaybackProfileHintFromName(fileName: string) {
@@ -200,13 +224,21 @@ export function inferSupportedProfiles(
     explicitProfile: PlaybackProfileId | null,
     videoCodec: VideoCodec,
     width: number | null,
+    fps: number | null,
 ): PlaybackProfileId[] {
+    const isHighFrameRate = typeof fps === 'number' && fps > 30
+    const isHighResolutionH264 = typeof width === 'number' && width > 1920
+
     if (explicitProfile === 'compatibility') {
         return ['compatibility']
     }
 
     if (explicitProfile === 'balanced') {
-        return ['balanced', 'compatibility']
+        return ['balanced']
+    }
+
+    if (explicitProfile === 'native') {
+        return ['native']
     }
 
     if (explicitProfile === 'modern-efficiency') {
@@ -232,9 +264,11 @@ export function inferSupportedProfiles(
     }
 
     if (videoCodec === 'h264') {
-        return width && width >= 1920
-            ? ['balanced', 'compatibility']
-            : ['compatibility']
+        return isHighResolutionH264 || isHighFrameRate
+            ? ['balanced']
+            : width && width >= 1920
+                ? ['balanced', 'compatibility']
+                : ['compatibility']
     }
 
     return ['compatibility']

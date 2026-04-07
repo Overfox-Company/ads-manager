@@ -3,6 +3,7 @@ import { getServerHttpUrl } from './serverOrigin'
 import type {
     ApiWarning,
     DurationOverrideRequest,
+    GenerateVariantsOnUploadRequest,
     ImageDurationRequest,
     OrientationRequest,
     PlaybackProfileRequest,
@@ -21,6 +22,17 @@ import type {
     StateResponse,
     UploadMediaResponse,
 } from '../types/network'
+
+export interface UploadProgressInfo {
+    loaded: number
+    total: number
+    percent: number
+}
+
+interface UploadMediaCallbacks {
+    onUploadProgress?: (progress: UploadProgressInfo) => void
+    onUploadTransferComplete?: () => void
+}
 
 async function requestJson<T>(input: RequestInfo | URL, init?: RequestInit) {
     const response = await fetch(input, {
@@ -79,7 +91,11 @@ export async function fetchPlayerManifest(screenId?: string | null) {
     return payload.manifest
 }
 
-export async function uploadMediaFiles(files: File[], items: UploadMediaDescriptor[]) {
+export async function uploadMediaFiles(
+    files: File[],
+    items: UploadMediaDescriptor[],
+    callbacks: UploadMediaCallbacks = {},
+) {
     const formData = new FormData()
 
     for (const file of files) {
@@ -88,9 +104,52 @@ export async function uploadMediaFiles(files: File[], items: UploadMediaDescript
 
     formData.append('metadata', JSON.stringify(items))
 
-    const payload = await requestJson<UploadMediaResponse>(getServerHttpUrl('/api/media/upload'), {
-        method: 'POST',
-        body: formData,
+    const payload = await new Promise<UploadMediaResponse>((resolve, reject) => {
+        const request = new XMLHttpRequest()
+
+        request.open('POST', getServerHttpUrl('/api/media/upload'))
+        request.responseType = 'json'
+
+        request.upload.onprogress = (event) => {
+            if (!event.lengthComputable) {
+                return
+            }
+
+            callbacks.onUploadProgress?.({
+                loaded: event.loaded,
+                total: event.total,
+                percent: event.total > 0 ? Math.round((event.loaded / event.total) * 100) : 0,
+            })
+        }
+
+        request.upload.onload = () => {
+            callbacks.onUploadTransferComplete?.()
+        }
+
+        request.onerror = () => {
+            reject(new Error('No se pudo completar la subida al servidor'))
+        }
+
+        request.onload = () => {
+            const payload = request.response && typeof request.response === 'object'
+                ? request.response as UploadMediaResponse | { error?: string }
+                : request.responseText
+                    ? JSON.parse(request.responseText) as UploadMediaResponse | { error?: string }
+                    : null
+
+            if (request.status >= 200 && request.status < 300 && payload && 'state' in payload) {
+                resolve(payload)
+                return
+            }
+
+            const message = payload && typeof payload === 'object' && 'error' in payload && payload.error
+                ? String(payload.error)
+                : 'No se pudo completar la solicitud al servidor'
+
+            reject(new Error(message))
+        }
+
+        request.send(formData)
     })
 
     return {
@@ -159,6 +218,15 @@ export async function updatePlaybackProfile(profile: PlaybackProfileId) {
     const payload = await requestJson<StateResponse>(
         getServerHttpUrl('/api/settings/playback-profile'),
         jsonRequest<PlaybackProfileRequest>({ profile }),
+    )
+
+    return payload.state
+}
+
+export async function updateGenerateVariantsOnUpload(enabled: boolean) {
+    const payload = await requestJson<StateResponse>(
+        getServerHttpUrl('/api/settings/upload-variants'),
+        jsonRequest<GenerateVariantsOnUploadRequest>({ enabled }),
     )
 
     return payload.state

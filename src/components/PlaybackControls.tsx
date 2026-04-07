@@ -10,7 +10,7 @@ import {
     VolumeLowIcon,
     VolumeMute01Icon,
 } from '@hugeicons-pro/core-solid-standard'
-import { formatDuration, formatPlaybackStatus } from '../lib/format'
+import { formatDuration } from '../lib/format'
 import type { MediaItem, PlaybackStatus } from '../types/media'
 import { Icon } from './Icon'
 
@@ -59,6 +59,7 @@ export function PlaybackControls({
 }: PlaybackControlsProps) {
     const currentPositionLabel =
         playlistLength === 0 ? 'Sin contenido' : `${currentIndex + 1} / ${playlistLength}`
+    const isPlaying = status === 'playing'
     const volumeIcon = isMonitorMuted || monitorVolume === 0
         ? VolumeMute01Icon
         : monitorVolume < 55
@@ -98,25 +99,27 @@ export function PlaybackControls({
                         <Icon icon={ArrowLeftIcon} size={18} />
                     </button>
 
-                    <button
-                        aria-pressed={status === 'playing'}
-                        className="transport-button transport-button--primary"
-                        disabled={disabled}
-                        onClick={onPlay}
-                        type="button"
-                    >
-                        <Icon icon={PlayIcon} size={19} />
-                    </button>
-
-                    <button
-                        aria-pressed={status === 'paused'}
-                        className="transport-button"
-                        disabled={disabled}
-                        onClick={onPause}
-                        type="button"
-                    >
-                        <Icon icon={PauseIcon} size={18} />
-                    </button>
+                    {isPlaying ? (
+                        <button
+                            aria-label="Pausar reproduccion"
+                            className="transport-button transport-button--primary"
+                            disabled={disabled}
+                            onClick={onPause}
+                            type="button"
+                        >
+                            <Icon icon={PauseIcon} size={18} />
+                        </button>
+                    ) : (
+                        <button
+                            aria-label="Iniciar reproduccion"
+                            className="transport-button transport-button--primary"
+                            disabled={disabled}
+                            onClick={onPlay}
+                            type="button"
+                        >
+                            <Icon icon={PlayIcon} size={19} />
+                        </button>
+                    )}
 
                     <button className="transport-button" disabled={disabled} onClick={onNext} type="button">
                         <Icon icon={ArrowRightIcon} size={18} />
@@ -143,9 +146,7 @@ export function PlaybackControls({
                     <span className="progress-cluster__time">{formatDuration(playbackTotalSeconds)}</span>
                 </div>
 
-                <div className="progress-cluster__status">
-                    <span className={`live-pill live-pill--${status}`}>{formatPlaybackStatus(status)}</span>
-                </div>
+
             </div>
 
             <div className="player-bar__volume">
