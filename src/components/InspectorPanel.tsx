@@ -36,12 +36,12 @@ export function InspectorPanel({
                     <h2 className="panel-title">Inspector de emision</h2>
                 </div>
 
-                <Link className="panel-link" target="_blank" to="/player">
-                    <Icon icon={ComputerVideoIcon} size={18} />
-                    <span>Abrir player</span>
-                </Link>
-            </div>
 
+            </div>
+            <Link className="panel-link" target="_blank" to="/player">
+                <Icon icon={ComputerVideoIcon} size={18} />
+                <span>Abrir player</span>
+            </Link>
             <section className="inspector-group">
                 <div className="inspector-group__label">
                     <Icon icon={Settings01Icon} size={16} />
